@@ -93,7 +93,7 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 		}
 		upReq.Header.Set("Authorization", "Bearer "+zenKey)
 		upReq.Header.Set("Content-Type", "application/json")
-		upReq.Header.Set("User-Agent", "opencode-cc/1.2")
+		upReq.Header.Set("User-Agent", ocUA())
 		if in.Stream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
@@ -157,7 +157,7 @@ func (s *Server) proxyResponsesViaAnthropic(
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("x-api-key", zenKey)
 	upReq.Header.Set("Content-Type", "application/json")
-	upReq.Header.Set("User-Agent", "opencode-cc/1.3")
+	upReq.Header.Set("User-Agent", ocUA())
 	if in.Stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {

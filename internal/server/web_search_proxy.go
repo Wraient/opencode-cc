@@ -327,7 +327,7 @@ func (s *Server) doOpenAIChat(
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("Accept", "application/json")
-	upReq.Header.Set("User-Agent", "opencode-cc/1.3")
+	upReq.Header.Set("User-Agent", ocUA())
 
 	resp, err := s.upstreamClient(stream, timeoutSeconds).Do(upReq)
 	if err != nil {

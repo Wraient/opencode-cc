@@ -57,7 +57,7 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		}
 		upReq.Header.Set("Authorization", "Bearer "+zenKey)
 		upReq.Header.Set("Content-Type", "application/json")
-		upReq.Header.Set("User-Agent", "opencode-cc/1.1")
+		upReq.Header.Set("User-Agent", ocUA())
 		if stream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {

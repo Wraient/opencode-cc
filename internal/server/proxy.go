@@ -100,7 +100,7 @@ func (s *Server) Proxy() http.HandlerFunc {
 			upReq.Header.Set("Accept", "application/json")
 		}
 		// Some upstreams prefer a UA.
-		upReq.Header.Set("User-Agent", "opencode-cc/1.0")
+		upReq.Header.Set("User-Agent", ocUA())
 		// Propagate the anthropic-version / anthropic-beta for observability
 		// on the upstream side (Zen ignores them for the OpenAI path).
 		if v := r.Header.Get("anthropic-version"); v != "" {
@@ -154,7 +154,7 @@ func (s *Server) proxyNativeAnthropic(
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("x-api-key", zenKey)
-	upReq.Header.Set("User-Agent", "opencode-cc/1.3")
+	upReq.Header.Set("User-Agent", ocUA())
 	if areq.Stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {
