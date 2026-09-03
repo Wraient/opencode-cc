@@ -58,7 +58,7 @@ func (s *Server) proxyResponsesPassthrough(
 
 	upStart := time.Now()
 	httpClient := s.upstreamClient(in.Stream, cfg.RequestTimeoutSeconds)
-	resp, err := httpClient.Do(upReq)
+	resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 	if err != nil {
 		logUpstreamError(r, incomingModel, targetModel, in.Stream, time.Since(upStart), err)
 		writeOpenAIError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())

@@ -209,3 +209,54 @@ func mustTestStore(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
+
+func TestDoUpstreamWithRetrySucceedsAfterOne503(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		if len(body) == 0 {
+			t.Errorf("attempt %d: empty upstream body", calls)
+		}
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("busy"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	template, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL, nil)
+	resp, err := doUpstreamWithRetry(upstream.Client(), template, []byte(`{"model":"m"}`))
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	defer resp.Body.Close()
+	if calls != 2 {
+		t.Fatalf("upstream calls = %d, want 2", calls)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("unexpected body: %s", raw)
+	}
+}
+
+func TestDoUpstreamWithRetryGivesUpAfterTwo503s(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("down"))
+	}))
+	defer upstream.Close()
+
+	template, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL, nil)
+	_, err := doUpstreamWithRetry(upstream.Client(), template, []byte(`{}`))
+	use, ok := err.(*upstreamStatusError)
+	if !ok {
+		t.Fatalf("err type = %T (%v), want *upstreamStatusError", err, err)
+	}
+	if use.status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", use.status)
+	}
+}
