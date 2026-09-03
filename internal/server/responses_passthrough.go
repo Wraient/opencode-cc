@@ -22,6 +22,12 @@ import (
 // The body is sanitized first (model rewrite + input dedupe + tool_choice
 // coercion), then relayed: streams pass SSE through minus ping keepalives,
 // non-stream responses pass bytes through as-is.
+// museSparkUpstreamSlots caps concurrent upstream Zen requests for
+// Responses-native models. Free-tier Zen 503s when several big-history
+// streams run at once (burst of parallel subagents + retries); queuing in
+// the proxy converts those 503s into slower 200s. Held for the whole relay.
+var museSparkUpstreamSlots = make(chan struct{}, 2)
+
 func (s *Server) proxyResponsesPassthrough(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -40,6 +46,17 @@ func (s *Server) proxyResponsesPassthrough(
 	}
 
 	upURL := strings.TrimRight(upstream, "/") + "/v1/responses"
+
+	select {
+	case museSparkUpstreamSlots <- struct{}{}:
+		defer func() { <-museSparkUpstreamSlots }()
+	case <-r.Context().Done():
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", "client went away while queued for upstream slot")
+		s.logFailed(r.Context(), r, incomingModel, targetModel, in.Stream,
+			http.StatusBadGateway, "queue wait canceled", reqBody, time.Since(start))
+		return
+	}
+
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upURL, bytes.NewReader(upBody))
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "api_error",

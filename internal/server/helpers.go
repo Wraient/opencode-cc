@@ -118,7 +118,7 @@ type upstreamStatusError struct {
 }
 
 func (e *upstreamStatusError) Error() string {
-	return "upstream request failed after retry: " + e.detail
+	return e.detail + " (after retry)"
 }
 
 func isTimeoutErr(err error) bool {
