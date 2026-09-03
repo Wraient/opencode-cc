@@ -35,17 +35,29 @@ func TestSetZenSessionHeadersForwardsClientValues(t *testing.T) {
 func TestSetZenSessionHeadersSynthesizes(t *testing.T) {
 	up, _ := http.NewRequest(http.MethodPost, "http://x/v1/chat/completions", nil)
 	setZenSessionHeaders(up, http.Header{}, "sticky-key-abc")
-	if got := up.Header.Get("x-opencode-session"); got != "sticky-key-abc" {
-		t.Errorf("session = %q, want sticky fallback", got)
+	if got := up.Header.Get("x-opencode-session"); !strings.HasPrefix(got, "ses_") || len(got) != 30 {
+		t.Errorf("session = %q, want stock ses_ format", got)
 	}
-	if got := up.Header.Get("x-opencode-request"); got == "" {
-		t.Errorf("request id missing, want generated UUID")
+	// Deterministic per sticky key: same session across turns/restarts.
+	up2, _ := http.NewRequest(http.MethodPost, "http://x/v1/chat/completions", nil)
+	setZenSessionHeaders(up2, http.Header{}, "sticky-key-abc")
+	if up2.Header.Get("x-opencode-session") != up.Header.Get("x-opencode-session") {
+		t.Errorf("session not stable for same sticky key")
 	}
-	if got := up.Header.Get("x-opencode-client"); got != "opencode-cc" {
-		t.Errorf("client = %q, want opencode-cc", got)
+	if got := up.Header.Get("x-opencode-request"); !strings.HasPrefix(got, "msg_") || len(got) != 30 {
+		t.Errorf("request = %q, want stock msg_ format", got)
+	}
+	if got := up.Header.Get("x-opencode-client"); got != "cli" {
+		t.Errorf("client = %q, want stock cli", got)
 	}
 	if got := up.Header.Get("x-opencode-project"); got != "" {
 		t.Errorf("project = %q, want omitted (never fabricated)", got)
+	}
+	// No proxy fingerprint anywhere.
+	for _, h := range []string{"x-opencode-session", "x-opencode-request", "x-opencode-client"} {
+		if strings.Contains(strings.ToLower(up.Header.Get(h)), "opencode-cc") {
+			t.Errorf("header %s leaks proxy identity: %q", h, up.Header.Get(h))
+		}
 	}
 }
 
