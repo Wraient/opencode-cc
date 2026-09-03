@@ -41,6 +41,13 @@ func (s *Server) Proxy() http.HandlerFunc {
 		nativeAnthropic := cfg.NativeAnthropic
 		timeoutSeconds := cfg.RequestTimeoutSeconds
 		targetModel := s.cfg.ResolveModel(areq.Model)
+		// Responses-native models are served ONLY on upstream /v1/responses;
+		// the Messages path would relay an opaque upstream 500, so fail fast.
+		if proxy.IsResponsesNativeModel(targetModel) {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+				targetModel+" is Responses-API-only; use POST /v1/responses")
+			return
+		}
 		hasWebSearch := shouldUseWebSearchShim(&areq)
 		webSearchMode := cfg.ResolveWebSearchMode()
 

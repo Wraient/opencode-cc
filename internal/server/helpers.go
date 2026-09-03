@@ -44,5 +44,7 @@ func (s *Server) upstreamClient(stream bool, timeoutSeconds int) *http.Client {
 	if stream || timeoutSeconds <= 0 {
 		return s.httpClient
 	}
-	return &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
+	// Reuse the hardened shared transport (H1-only, header timeout) so
+	// timeout clients don't silently bypass it via http.DefaultTransport.
+	return &http.Client{Transport: s.httpClient.Transport, Timeout: time.Duration(timeoutSeconds) * time.Second}
 }

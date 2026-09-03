@@ -5,28 +5,70 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// withLogging is a minimal access logger. It avoids the overhead of reading
-// request bodies or computing stats on the hot path; detailed per-request
-// recording happens in the proxy handlers via the store.
+// accessLogEnabled reports whether per-request access lines are emitted to
+// stderr (journald). Default on; set OPENCODE_CC_ACCESS_LOG=0 to silence.
+// debugLogEnabled adds request-start lines for tracing in-flight requests.
+func accessLogEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("OPENCODE_CC_ACCESS_LOG"))
+	if v == "" {
+		return true
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return true
+	}
+	return b
+}
+
+func debugLogEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("OPENCODE_CC_DEBUG"))
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
+}
+
+// withLogging emits one access line per completed request (method, path,
+// status, latency) plus the client remote addr. Before Sep 2026 this
+// middleware was intentionally silent, which made a wedged process
+// undiagnosable: haning requests simply never appeared anywhere. Detailed
+// per-request recording still happens in the proxy handlers via the store;
+// this is the cheap always-on signal for journalctl.
 func (s *Server) withLogging(h http.Handler) http.Handler {
+	debug := debugLogEnabled()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		if debug {
+			log.Printf("opencode-cc: started %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		}
 		rw := &statusRecorder{ResponseWriter: w, status: 200}
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				log.Printf("panic serving %s %s: %v", r.Method, r.URL.Path, recovered)
+				log.Printf("opencode-cc: panic serving %s %s: %v", r.Method, r.URL.Path, recovered)
 				writeRecoveredPanic(rw, r, fmt.Sprint(recovered))
 			}
-			_ = start
-			// Intentionally silent; the panel surfaces real data from the store.
-			_ = rw.status
+			if accessLogEnabled() {
+				log.Printf("opencode-cc: %s %s -> %d %s", r.Method, r.URL.Path, rw.status, time.Since(start).Round(time.Millisecond))
+			}
 		}()
 		h.ServeHTTP(rw, r)
 	})
+}
+
+// logUpstreamError emits an stderr line when an upstream round-trip fails
+// (connection stall, DNS, refused, timeout). These lines are the early
+// warning for wedge-class incidents: requests that never complete never
+// reach the access log, but their upstream failure does land here.
+func logUpstreamError(r *http.Request, incomingModel, targetModel string, stream bool, after time.Duration, err error) {
+	log.Printf("opencode-cc: upstream error %s %s model=%s target=%s stream=%v after=%s err=%v",
+		r.Method, r.URL.Path, incomingModel, targetModel, stream, after.Round(time.Millisecond), err)
 }
 
 type statusRecorder struct {

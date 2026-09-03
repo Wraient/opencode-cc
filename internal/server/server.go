@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +32,20 @@ func New(cfg *config.Config, st *store.Store) *Server {
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 16,
 				IdleConnTimeout:     90 * time.Second,
+				// Bound the wait for upstream response headers on every
+				// request, streams included.
+				ResponseHeaderTimeout: 30 * time.Second,
+				// HTTP/1.1 only upstream. Sep 2026 forensics (SIGQUIT
+				// goroutine dump) proved the wedge: one HTTP/2 connection
+				// to a Cloudflare edge stalled in flow control (peer
+				// stopped sending WINDOW_UPDATE; 75KB stuck in Send-Q) and
+				// every route sharing this client queued on it forever —
+				// Go's auto-H2 transport exposes no read-idle/ping
+				// timeout knobs, and no request timeout can fire on a
+				// stream. H1 isolates a stall to its own connection, which
+				// the timeouts bound; fresh requests open fresh conns.
+				ForceAttemptHTTP2: false,
+				TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
 			},
 		},
 	}

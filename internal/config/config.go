@@ -106,8 +106,11 @@ type Config struct {
 	LogRequests bool `json:"log_requests"`
 	// MaxBodyLogBytes caps how much of a request/response body is stored.
 	MaxBodyLogBytes int `json:"max_body_log_bytes"`
-	// RequestTimeoutSeconds is the upstream timeout. 0 = no timeout (streams
-	// can run long); a sane upper bound is still recommended.
+	// RequestTimeoutSeconds is the upstream timeout for NON-STREAMING
+	// requests. 300s default: long reasoning runs need headroom, but an
+	// unbounded wait lets one stalled upstream wedge the proxy (Sep 2026).
+	// Streams are unaffected (bounded by client disconnect instead). 0 =
+	// no timeout (not recommended).
 	RequestTimeoutSeconds int `json:"request_timeout_seconds"`
 	// PromptCacheEnabled enables request normalization and upstream prompt-cache
 	// hints that improve cache hits without changing user-visible prompt text.
@@ -169,7 +172,7 @@ func Default() *Config {
 		WebSearchMode:               DefaultWebSearchMode,
 		LogRequests:                 true,
 		MaxBodyLogBytes:             1 << 14, // 16 KiB per body side
-		RequestTimeoutSeconds:       0,
+		RequestTimeoutSeconds:       300,
 		PromptCacheEnabled:          true,
 		PromptCacheKeyPrefix:        "opencode-cc",
 		PromptCacheAnthropicControl: true,

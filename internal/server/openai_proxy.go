@@ -38,6 +38,14 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 			return
 		}
 
+		// Responses-native models are served ONLY on upstream /v1/responses;
+		// the chat path would relay an opaque upstream 500, so fail fast.
+		if proxy.IsResponsesNativeModel(targetModel) {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+				targetModel+" is Responses-API-only; use POST /v1/responses")
+			return
+		}
+
 		cfg := s.cfg.Snapshot()
 		upstream, zenKey, ok := s.cfg.NextUpstreamForKey(promptCacheKeyFromOpenAIBody(upBody))
 		if !ok {

@@ -42,6 +42,22 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 		targetModel := s.cfg.ResolveModel(incomingModel)
 		cfg := s.cfg.Snapshot()
 
+		// Responses-native models (muse-spark*) are served ONLY on the
+		// upstream Responses API: forward the sanitized body instead of
+		// translating (translation 500s upstream).
+		if proxy.IsResponsesNativeModel(targetModel) {
+			upstream, zenKey, ok := s.cfg.NextUpstreamForKey(strings.TrimSpace(in.PromptCacheKey))
+			if !ok {
+				const msg = "no upstream API key configured. Set one in the web panel (Settings → upstreams)."
+				writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", msg)
+				s.logFailed(r.Context(), r, incomingModel, targetModel, in.Stream,
+					http.StatusUnauthorized, "no upstream api key", body, time.Since(start))
+				return
+			}
+			s.proxyResponsesPassthrough(w, r, in, cfg, upstream, zenKey, incomingModel, targetModel, body, start)
+			return
+		}
+
 		if cfg.NativeAnthropic && proxy.IsNativeAnthropicModel(targetModel) {
 			stickyKey := strings.TrimSpace(in.PromptCacheKey)
 			if stickyKey == "" {

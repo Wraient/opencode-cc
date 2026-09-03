@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -28,9 +29,14 @@ type AnthropicModelList struct {
 
 // fetchZenModels queries the upstream <base>/v1/models and returns the ids. It
 // is used by the /v1/models handler so Claude Code sees the real Zen model ids.
-func fetchZenModels(client *http.Client, base, apiKey string) ([]AnthropicModelInfo, error) {
+//
+// ctx MUST carry a timeout (the caller sets it): a stalled upstream fetch must
+// fail fast instead of parking the handler goroutine forever. In Sep 2026 a
+// flow-control-stalled HTTP/2 upstream connection wedged every API route this
+// way — see the transport notes in server.New.
+func fetchZenModels(ctx context.Context, client *http.Client, base, apiKey string) ([]AnthropicModelInfo, error) {
 	url := base + "/v1/models"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -93,10 +99,15 @@ func ModelsHandlerWithUpstream(client *http.Client, upstream func() (base, apiKe
 			writeJSON(w, http.StatusOK, list)
 			return
 		}
-		// Fetch live from upstream.
+		// Fetch live from upstream with a hard timeout so a stalled
+		// upstream can never park this handler (and every later caller,
+		// once the 60s cache expires) forever.
 		base, key := upstream()
 		if base != "" && client != nil {
-			if models, err := fetchZenModels(client, base, key); err == nil && len(models) > 0 {
+			fetchCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			models, err := fetchZenModels(fetchCtx, client, base, key)
+			cancel()
+			if err == nil && len(models) > 0 {
 				cache = models
 				cachedAt = time.Now()
 			}
