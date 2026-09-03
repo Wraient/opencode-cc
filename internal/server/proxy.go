@@ -68,13 +68,13 @@ func (s *Server) Proxy() http.HandlerFunc {
 		if hasWebSearch && webSearchMode == cfgpkg.WebSearchModeNative {
 			searchUpstream, searchKey := cfg.ResolveWebSearchUpstream(upstream, zenKey)
 			searchModel := cfg.ResolveWebSearchModel(targetModel)
-			s.proxyNativeAnthropic(w, r, body, &areq, searchUpstream, searchKey, searchModel, timeoutSeconds, start)
+			s.proxyNativeAnthropic(w, r, body, &areq, searchUpstream, searchKey, searchModel, timeoutSeconds, stickyKey, start)
 			return
 		}
 
 		if nativeAnthropic && proxy.IsNativeAnthropicModel(targetModel) &&
 			!(hasWebSearch && webSearchMode == cfgpkg.WebSearchModeTranslate) {
-			s.proxyNativeAnthropic(w, r, body, &areq, upstream, zenKey, targetModel, timeoutSeconds, start)
+			s.proxyNativeAnthropic(w, r, body, &areq, upstream, zenKey, targetModel, timeoutSeconds, stickyKey, start)
 			return
 		}
 
@@ -108,6 +108,7 @@ func (s *Server) Proxy() http.HandlerFunc {
 		}
 		// Some upstreams prefer a UA.
 		upReq.Header.Set("User-Agent", ocUA())
+		setZenSessionHeaders(upReq, r.Header, stickyKey)
 		// Propagate the anthropic-version / anthropic-beta for observability
 		// on the upstream side (Zen ignores them for the OpenAI path).
 		if v := r.Header.Get("anthropic-version"); v != "" {
@@ -144,6 +145,7 @@ func (s *Server) proxyNativeAnthropic(
 	areq *proxy.AnthropicRequest,
 	upstream, zenKey, targetModel string,
 	timeoutSeconds int,
+	stickyKey string,
 	start time.Time,
 ) {
 	upBody, err := proxy.PrepareAnthropicPromptCacheBody(body, targetModel, promptCacheOptionsFromConfig(s.cfg.Snapshot()))
@@ -162,6 +164,7 @@ func (s *Server) proxyNativeAnthropic(
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("x-api-key", zenKey)
 	upReq.Header.Set("User-Agent", ocUA())
+	setZenSessionHeaders(upReq, r.Header, stickyKey)
 	if areq.Stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {

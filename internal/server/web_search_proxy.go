@@ -66,7 +66,7 @@ func (s *Server) handleWebSearchShim(
 		prepareWebSearchModelRequest(&queryReq, areq, searchModel, cfg, "query")
 
 		var err error
-		queryResp, err = s.doOpenAIChat(r.Context(), upstream, zenKey, &queryReq, false, timeoutSeconds)
+		queryResp, err = s.doOpenAIChat(r, upstream, zenKey, &queryReq, false, timeoutSeconds)
 		if err != nil {
 			writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
 			s.logFailed(r.Context(), r, areq.Model, targetModel, areq.Stream, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
@@ -123,7 +123,7 @@ func (s *Server) handleWebSearchShim(
 		})
 	} else {
 		answerReq := buildWebSearchAnswerRequest(oreq, call, results, areq, searchModel, cfg)
-		finalOpenAIResp, err := s.doOpenAIChat(r.Context(), upstream, zenKey, answerReq, false, timeoutSeconds)
+		finalOpenAIResp, err := s.doOpenAIChat(r, upstream, zenKey, answerReq, false, timeoutSeconds)
 		if err != nil {
 			answerResp.Content = append(answerResp.Content, searchBlocks...)
 			answerResp.Content = append(answerResp.Content, fallbackSearchSummary(results))
@@ -309,7 +309,7 @@ func cloneOpenAIRequest(req *proxy.OpenAIRequest) proxy.OpenAIRequest {
 }
 
 func (s *Server) doOpenAIChat(
-	ctx context.Context,
+	down *http.Request,
 	upstream, zenKey string,
 	req *proxy.OpenAIRequest,
 	stream bool,
@@ -320,7 +320,7 @@ func (s *Server) doOpenAIChat(
 		return nil, fmt.Errorf("could not encode upstream request: %w", err)
 	}
 	upURL := strings.TrimRight(upstream, "/") + "/v1/chat/completions"
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upURL, bytes.NewReader(upBody))
+	upReq, err := http.NewRequestWithContext(down.Context(), http.MethodPost, upURL, bytes.NewReader(upBody))
 	if err != nil {
 		return nil, fmt.Errorf("could not build upstream request: %w", err)
 	}
@@ -328,6 +328,7 @@ func (s *Server) doOpenAIChat(
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("Accept", "application/json")
 	upReq.Header.Set("User-Agent", ocUA())
+	setZenSessionHeaders(upReq, down.Header, req.PromptCacheKey)
 
 	resp, err := s.upstreamClient(stream, timeoutSeconds).Do(upReq)
 	if err != nil {

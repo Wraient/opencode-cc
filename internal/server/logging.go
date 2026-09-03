@@ -67,8 +67,12 @@ func (s *Server) withLogging(h http.Handler) http.Handler {
 // warning for wedge-class incidents: requests that never complete never
 // reach the access log, but their upstream failure does land here.
 func logUpstreamError(r *http.Request, incomingModel, targetModel string, stream bool, after time.Duration, err error) {
-	log.Printf("opencode-cc: upstream error %s %s model=%s target=%s stream=%v after=%s err=%v",
-		r.Method, r.URL.Path, incomingModel, targetModel, stream, after.Round(time.Millisecond), err)
+	sess := ""
+	if r != nil {
+		sess = r.Header.Get(zenHeaderSession)
+	}
+	log.Printf("opencode-cc: upstream error %s %s model=%s target=%s stream=%v session=%s after=%s err=%v",
+		r.Method, r.URL.Path, incomingModel, targetModel, stream, sess, after.Round(time.Millisecond), err)
 }
 
 type statusRecorder struct {

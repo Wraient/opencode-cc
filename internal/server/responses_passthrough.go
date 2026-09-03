@@ -49,6 +49,7 @@ func (s *Server) proxyResponsesPassthrough(
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("User-Agent", ocUA())
+	setZenSessionHeaders(upReq, r.Header, in.PromptCacheKey)
 	if in.Stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {

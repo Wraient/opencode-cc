@@ -74,7 +74,7 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 					http.StatusUnauthorized, "no upstream api key", body, time.Since(start))
 				return
 			}
-			s.proxyResponsesViaAnthropic(w, r, in, cfg, upstream, zenKey, incomingModel, targetModel, body, start)
+			s.proxyResponsesViaAnthropic(w, r, in, cfg, upstream, zenKey, incomingModel, targetModel, stickyKey, body, start)
 			return
 		}
 
@@ -110,6 +110,7 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 		upReq.Header.Set("Authorization", "Bearer "+zenKey)
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", ocUA())
+		setZenSessionHeaders(upReq, r.Header, chatReq.PromptCacheKey)
 		if in.Stream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
@@ -142,6 +143,7 @@ func (s *Server) proxyResponsesViaAnthropic(
 	cfg *config.Config,
 	upstream, zenKey string,
 	incomingModel, targetModel string,
+	stickyKey string,
 	reqBody []byte,
 	start time.Time,
 ) {
@@ -174,6 +176,7 @@ func (s *Server) proxyResponsesViaAnthropic(
 	upReq.Header.Set("x-api-key", zenKey)
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("User-Agent", ocUA())
+	setZenSessionHeaders(upReq, r.Header, stickyKey)
 	if in.Stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {

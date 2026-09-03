@@ -47,7 +47,8 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		}
 
 		cfg := s.cfg.Snapshot()
-		upstream, zenKey, ok := s.cfg.NextUpstreamForKey(promptCacheKeyFromOpenAIBody(upBody))
+		cacheKey := promptCacheKeyFromOpenAIBody(upBody)
+		upstream, zenKey, ok := s.cfg.NextUpstreamForKey(cacheKey)
 		if !ok {
 			const msg = "no upstream API key configured. Set one in the web panel (Settings → upstreams)."
 			writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", msg)
@@ -66,6 +67,7 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		upReq.Header.Set("Authorization", "Bearer "+zenKey)
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", ocUA())
+		setZenSessionHeaders(upReq, r.Header, cacheKey)
 		if stream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
