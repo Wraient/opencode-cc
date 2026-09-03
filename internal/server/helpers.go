@@ -63,7 +63,11 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 	var lastErr error
 	var lastStatus int
 	var lastDetail string
-	for attempt := 0; attempt < 2; attempt++ {
+	// Timeouts get up to 3 attempts (30s header timeout each): Zen free-tier
+	// intermittently stalls 30-90s on big histories before first byte.
+	// Upstream 5xx gets up to 2 attempts: retrying a struggling upstream
+	// harder than that adds load without helping.
+	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			if template.Context().Err() != nil {
 				break // downstream went away; don't hammer upstream
@@ -79,22 +83,22 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 		}
 		if err != nil {
 			lastErr = err
-			if !isTimeoutErr(err) {
+			lastStatus = 0
+			if !isTimeoutErr(err) || attempt >= 2 {
 				return nil, err
 			}
-			if attempt == 0 {
-				log.Printf("opencode-cc: upstream attempt %d timeout (%s), retrying once", attempt+1, truncateErr(err.Error()))
-				continue
-			}
-			break
+			log.Printf("opencode-cc: upstream attempt %d timeout (%s), retrying", attempt+1, truncateErr(err.Error()))
+			continue
 		}
+		lastErr = nil
 		lastStatus = resp.StatusCode
 		lastDetail = "upstream HTTP " + resp.Status
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
-		if attempt == 0 {
-			log.Printf("opencode-cc: upstream attempt %d got %s, retrying once", attempt+1, resp.Status)
+		if attempt >= 1 {
+			break
 		}
+		log.Printf("opencode-cc: upstream attempt %d got %s, retrying once", attempt+1, resp.Status)
 	}
 	if lastErr != nil && lastStatus == 0 {
 		return nil, lastErr
