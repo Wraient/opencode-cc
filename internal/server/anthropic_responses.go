@@ -66,7 +66,11 @@ func (s *Server) proxyAnthropicViaResponses(
 	timeoutSeconds int,
 	start time.Time,
 ) {
-	upBody, err := proxy.ConvertAnthropicToResponsesBody(areq, targetModel, stickyKey)
+	upBody, err := proxy.ConvertAnthropicToResponsesBody(areq, targetModel, proxy.BridgeOptions{
+		PromptCacheKey: stickyKey,
+		EffortLevels:   s.levelsForModel(targetModel),
+		DefaultEffort:  s.cfg.BridgeDefaultEffort,
+	})
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		s.logFailed(r.Context(), r, incomingModel, targetModel, areq.Stream,
@@ -123,7 +127,11 @@ func (s *Server) proxyAnthropicViaResponses(
 			http.StatusBadGateway, err.Error(), body, time.Since(start))
 		return
 	}
-	if newResp, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,
+	if newResp, newBody, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,
+		incomingModel, targetModel, areq.Stream, start); ok {
+		resp, upBody = newResp, newBody
+	}
+	if newResp, _, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
 		incomingModel, targetModel, areq.Stream, start); ok {
 		resp = newResp
 	}

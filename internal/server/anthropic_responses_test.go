@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,4 +234,54 @@ func TestAnthropicStreamEmitsMessageStartFirst(t *testing.T) {
 		t.Errorf("message_start took %s; must precede delayed upstream content", elapsed.Round(time.Millisecond))
 	}
 	_, _ = io.Copy(io.Discard, resp.Body) // drain so the handler can finish
+}
+
+// TestBridgeThinkingMapsToModelMax pins the effort range end to end:
+// ultrathink-class budgets and unknown effort names (e.g. "ultracode")
+// reach upstream as the model's real maximum (xhigh for muse-spark),
+// while plain turns stay on the fast minimal default.
+func TestBridgeThinkingMapsToModelMax(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		seen = append(seen, body.Reasoning.Effort)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_e","object":"response","status":"completed","model":"m",
+			"output":[{"id":"a","type":"message","status":"completed","role":"assistant",
+				"content":[{"type":"output_text","text":"ok","annotations":[]}]}],
+			"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,
+				"input_tokens_details":{},"output_tokens_details":{}}}`)
+	}))
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+
+	post := func(thinking string) {
+		t.Helper()
+		body := `{"model":"client-model","max_tokens":128,"stream":false,` + thinking +
+			`"messages":[{"role":"user","content":"hi"}]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		srv.Proxy().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	post(`"thinking":{"type":"enabled","budget_tokens":31999},`)
+	post(`"thinking":{"type":"enabled","effort":"ultracode"},`)
+	post(``) // no thinking: fast default
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(seen, []string{"xhigh", "xhigh", "minimal"}) {
+		t.Errorf("upstream efforts = %v, want [xhigh xhigh minimal]", seen)
+	}
 }

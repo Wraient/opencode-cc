@@ -124,6 +124,11 @@ type Config struct {
 	// PromptCacheNormalize keeps cacheable request structure stable: system
 	// messages first, sorted tools/context blocks, and volatile metadata removed.
 	PromptCacheNormalize bool `json:"prompt_cache_normalize"`
+	// BridgeDefaultEffort is the Responses reasoning effort the Anthropic
+	// bridge uses when the client sends no thinking config. Empty means
+	// "minimal" (fast plain turns); set "xhigh" to always run hot. Unknown
+	// values fall back to minimal, never to the slow upstream default.
+	BridgeDefaultEffort string `json:"bridge_default_effort"`
 	// ThinkingBudgetMappings are evaluated by target model. They translate
 	// Anthropic thinking budget_tokens into provider-specific request fields.
 	ThinkingBudgetMappings []ThinkingBudgetMapping `json:"thinking_budget_mappings"`
@@ -177,6 +182,7 @@ func Default() *Config {
 		PromptCacheKeyPrefix:        "opencode-cc",
 		PromptCacheAnthropicControl: true,
 		PromptCacheNormalize:        true,
+		BridgeDefaultEffort:         "minimal",
 		ThinkingBudgetMappings:      DefaultThinkingBudgetMappings(),
 	}
 }

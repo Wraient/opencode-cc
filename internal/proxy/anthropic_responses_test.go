@@ -20,7 +20,7 @@ func TestConvertAnthropicToResponsesBody(t *testing.T) {
 			Name: "get_weather", Description: "city weather",
 			InputSchema: jsonRawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
 		}},
-	}, "muse-spark-1.3-contributor-free", "")
+	}, "muse-spark-1.3-contributor-free", BridgeOptions{})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestConvertAnthropicHistoryRoundTrip(t *testing.T) {
 				{Type: "tool_result", ToolUseID: "call_1", Content: &AnthropicMessageContent{Text: "sunny", IsStr: true}},
 			}}},
 		},
-	}, "muse-spark-1.3-contributor-free", "")
+	}, "muse-spark-1.3-contributor-free", BridgeOptions{})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestConvertAnthropicImageAndEmpty(t *testing.T) {
 				{Type: "image", Source: &AnthropicImageSource{Type: "base64", MediaType: "image/png", Data: "aGVsbG8="}},
 			}}},
 		},
-	}, "muse-spark-1.3-contributor-free", "")
+	}, "muse-spark-1.3-contributor-free", BridgeOptions{})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestConvertAnthropicImageAndEmpty(t *testing.T) {
 
 	_, err = ConvertAnthropicToResponsesBody(&AnthropicRequest{
 		Model: "muse-spark-1.3-contributor-free", MaxTokens: 64,
-	}, "muse-spark-1.3-contributor-free", "")
+	}, "muse-spark-1.3-contributor-free", BridgeOptions{})
 	if err == nil {
 		t.Error("expected error for message-less request")
 	}
@@ -145,7 +145,7 @@ func TestConvertAnthropicToolResultImageRidesAlong(t *testing.T) {
 				}}},
 			}}},
 		},
-	}, "muse-spark-1.3-contributor-free", "")
+	}, "muse-spark-1.3-contributor-free", BridgeOptions{})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestConvertAnthropicReasoningEffort(t *testing.T) {
 		t.Helper()
 		body, err := ConvertAnthropicToResponsesBody(&AnthropicRequest{
 			Model: "m", MaxTokens: 64, Messages: msg, Thinking: thinking,
-		}, "m", "")
+		}, "m", BridgeOptions{})
 		if err != nil {
 			t.Fatalf("build: %v", err)
 		}
@@ -268,7 +268,7 @@ func TestConvertAnthropicPromptCacheKey(t *testing.T) {
 	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
 	body, err := ConvertAnthropicToResponsesBody(&AnthropicRequest{
 		Model: "m", MaxTokens: 64, Messages: msg,
-	}, "m", "ses_sticky123")
+	}, "m", BridgeOptions{PromptCacheKey: "ses_sticky123"})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -285,11 +285,49 @@ func TestConvertAnthropicPromptCacheKey(t *testing.T) {
 
 	plain, err := ConvertAnthropicToResponsesBody(&AnthropicRequest{
 		Model: "m", MaxTokens: 64, Messages: msg,
-	}, "m", "")
+	}, "m", BridgeOptions{})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if strings.Contains(string(plain), "prompt_cache_key") {
 		t.Errorf("empty sticky key must omit prompt_cache_key: %s", plain)
+	}
+}
+
+func TestConvertAnthropicReasoningTopBands(t *testing.T) {
+	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
+	muse := []string{"minimal", "low", "medium", "high", "xhigh"}
+	effortOf := func(thinking *AnthropicThinking, levels []string, def string) string {
+		t.Helper()
+		body, err := ConvertAnthropicToResponsesBody(&AnthropicRequest{
+			Model: "m", MaxTokens: 64, Messages: msg, Thinking: thinking,
+		}, "m", BridgeOptions{EffortLevels: levels, DefaultEffort: def})
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		var req struct {
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return req.Reasoning.Effort
+	}
+	if got := effortOf(&AnthropicThinking{Type: "enabled", BudgetTokens: 20000}, muse, ""); got != "xhigh" {
+		t.Errorf("20k budget must reach xhigh, got %q", got)
+	}
+	if got := effortOf(&AnthropicThinking{Type: "enabled", BudgetTokens: 31999}, muse, ""); got != "xhigh" {
+		t.Errorf("ultrathink budget must clamp to xhigh, got %q", got)
+	}
+	if got := effortOf(&AnthropicThinking{Type: "enabled", Effort: "ultracode"}, muse, ""); got != "xhigh" {
+		t.Errorf("unknown effort name must clamp to xhigh, got %q", got)
+	}
+	if got := effortOf(nil, muse, "xhigh"); got != "xhigh" {
+		t.Errorf("xhigh default must be honored, got %q", got)
+	}
+	if got := effortOf(nil, muse, "bogus"); got != "minimal" {
+		t.Errorf("bogus default must fall back to minimal, got %q", got)
 	}
 }

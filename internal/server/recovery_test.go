@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,12 +27,19 @@ const recoveryOKResponse = `{"id":"resp_rec","object":"response","status":"compl
 // Responses-native muse model and the given mock upstream.
 func recoveryTestStack(t *testing.T, upstream http.Handler) *httptest.Server {
 	t.Helper()
+	return recoveryTestStackWithTarget(t, upstream, "muse-spark-1.3-contributor-free")
+}
+
+// recoveryTestStackWithTarget is recoveryTestStack with an explicit target
+// model (levels are resolved per target, so learning tests need control).
+func recoveryTestStackWithTarget(t *testing.T, upstream http.Handler, target string) *httptest.Server {
+	t.Helper()
 	zen := httptest.NewServer(upstream)
 	t.Cleanup(zen.Close)
 	cfg := config.Default()
 	cfg.UpstreamBase = zen.URL
 	cfg.ZenAPIKey = "zen-test-key"
-	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "muse-spark-1.3-contributor-free"}}
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: target}}
 	st, err := store.Open(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -172,5 +180,87 @@ func TestBridgeRelaysStaleReasoning400WithoutRetry(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Errorf("bridge must not retry blob-free requests, hits=%d", hits)
+	}
+}
+
+const invalidEffortUpstreamErr = `{"model":"muse-spark-9-test","error":{"param":"reasoning.effort","type":"invalid_request_error","message":"Upstream request failed: [invalid_request_error] ` + "`reasoning.effort`" + `: unknown variant ` + "`ultra`" + `, expected one of ` + "`low`" + `, ` + "`medium`" + `, ` + "`high`" + `}}`
+
+// TestPassthroughRetriesInvalidEffort pins the self-healing path: an unknown
+// effort is pre-clamped to the known max; if upstream still rejects it, the
+// proxy learns the taught set, clamps, and retries once — the client gets
+// the recovered 200 and the model is fixed permanently.
+func TestPassthroughRetriesInvalidEffort(t *testing.T) {
+	var hits int
+	var seenEfforts []string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		seenEfforts = append(seenEfforts, body.Reasoning.Effort)
+		// Unknown model "muse-spark-9-test": only low/medium/high exist. First hit
+		// carries the default-clamped xhigh and must fail; the retry with
+		// the taught max (high) succeeds.
+		if body.Reasoning.Effort == "high" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, recoveryOKResponse)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, invalidEffortUpstreamErr)
+	})
+	httpSrv := recoveryTestStackWithTarget(t, upstream, "muse-spark-9-test")
+
+	resp, err := http.Post(httpSrv.URL+"/v1/responses", "application/json", strings.NewReader(
+		`{"model":"muse-spark-9-test","stream":false,"reasoning":{"effort":"ultra"},
+		  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("client must get 200 after clamp+retry, got %d: %s", resp.StatusCode, raw)
+	}
+	if hits != 2 {
+		t.Fatalf("expected exactly 1 retry (2 hits), got %d (%v)", hits, seenEfforts)
+	}
+	if seenEfforts[0] != "xhigh" || seenEfforts[1] != "high" {
+		t.Errorf("upstream must see default-clamped xhigh then taught max high: %v", seenEfforts)
+	}
+}
+
+// TestPassthroughDemotesListedButRejectedTop covers the max-style case: the
+// taught list names a top level upstream still rejects. The proxy demotes
+// it (persisted for next time) and relays the second error without looping.
+func TestPassthroughDemotesListedButRejectedTop(t *testing.T) {
+	var hits int
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, invalidEffortUpstreamErr)
+	})
+	httpSrv := recoveryTestStackWithTarget(t, upstream, "muse-spark-9-test")
+
+	resp, err := http.Post(httpSrv.URL+"/v1/responses", "application/json", strings.NewReader(
+		`{"model":"muse-spark-9-test","stream":false,"reasoning":{"effort":"ultra"},
+		  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("double failure must relay 400, got %d", resp.StatusCode)
+	}
+	if hits != 2 {
+		t.Errorf("exactly one retry, no loop: hits=%d", hits)
 	}
 }

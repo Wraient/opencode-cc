@@ -44,6 +44,10 @@ func (s *Server) proxyResponsesPassthrough(
 			"could not prepare upstream Responses request: "+err.Error())
 		return
 	}
+	// Client-supplied effort names are normalized into the target model's
+	// known scale (unknown -> model maximum); requests without an effort
+	// pass through untouched.
+	upBody = s.clampPassthroughEffort(upBody, targetModel, incomingModel)
 
 	upURL := strings.TrimRight(upstream, "/") + "/v1/responses"
 
@@ -83,7 +87,11 @@ func (s *Server) proxyResponsesPassthrough(
 			http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
 		return
 	}
-	if newResp, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,
+	if newResp, newBody, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,
+		incomingModel, targetModel, in.Stream, start); ok {
+		resp, upBody = newResp, newBody
+	}
+	if newResp, _, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
 		incomingModel, targetModel, in.Stream, start); ok {
 		resp = newResp
 	}

@@ -272,6 +272,9 @@ type AnthropicToolChoice struct {
 type AnthropicThinking struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	// Effort carries newer clients' named thinking level (e.g. "max").
+	// Unknown names clamp to the model's maximum, never fail.
+	Effort string `json:"effort,omitempty"`
 }
 
 // ---- Non-streaming response ----

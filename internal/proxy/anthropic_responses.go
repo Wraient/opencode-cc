@@ -19,11 +19,23 @@ import (
 	"strings"
 )
 
+// BridgeOptions tunes the Anthropic -> Responses translation.
+type BridgeOptions struct {
+	// PromptCacheKey is an opaque sticky key (may be "") — when set it is
+	// forwarded as the upstream prompt_cache_key so repeated turns in one
+	// session hit provider prompt cache.
+	PromptCacheKey string
+	// EffortLevels is the target model's ordered reasoning scale, low to
+	// high; nil/empty falls back to DefaultReasoningLevels.
+	EffortLevels []string
+	// DefaultEffort is used when thinking is absent; "" means minimal.
+	// Garbage values fall back to minimal, never to upstream default.
+	DefaultEffort string
+}
+
 // ConvertAnthropicToResponsesBody builds an upstream Responses API request
-// body from an Anthropic Messages request for targetModel. promptCacheKey is
-// an opaque sticky key (may be "") — when set it is forwarded as the upstream
-// prompt_cache_key so repeated turns in one session hit provider prompt cache.
-func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel, promptCacheKey string) ([]byte, error) {
+// body from an Anthropic Messages request for targetModel.
+func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel string, opts BridgeOptions) ([]byte, error) {
 	if in == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
@@ -46,13 +58,15 @@ func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel, promptCa
 	if in.MaxTokens > 0 {
 		body["max_output_tokens"] = in.MaxTokens
 	}
-	// Reasoning effort: absent/disabled thinking means a plain tool-loop turn,
-	// which runs ~4x faster on "minimal" than the upstream default (1.6s vs
-	// ~7s on a trivial prompt, 2026-09-15 probe). Enabled thinking budgets
-	// map up by size.
-	body["reasoning"] = map[string]any{"effort": anthropicThinkingEffort(in.Thinking)}
-	if promptCacheKey != "" {
-		body["prompt_cache_key"] = promptCacheKey
+	// Reasoning effort: absent thinking means a plain tool-loop turn, which
+	// runs ~4x faster on "minimal" than the upstream default (1.6s vs ~7s
+	// on a trivial prompt, 2026-09-15 probe). Explicit thinking maps across
+	// the model's real scale (names exact, unknown clamped to max).
+	body["reasoning"] = map[string]any{
+		"effort": ResolveBridgeEffort(in.Thinking, opts.EffortLevels, opts.DefaultEffort),
+	}
+	if opts.PromptCacheKey != "" {
+		body["prompt_cache_key"] = opts.PromptCacheKey
 		body["prompt_cache_retention"] = "24h"
 	}
 	if in.Temperature != nil {
@@ -176,27 +190,6 @@ func anthropicMessagesToResponsesInput(messages []AnthropicMessage) ([]any, erro
 		return nil, fmt.Errorf("no convertible messages in request")
 	}
 	return items, nil
-}
-
-// anthropicThinkingEffort maps Claude extended-thinking to a Responses
-// reasoning effort (see ConvertAnthropicToResponsesBody).
-func anthropicThinkingEffort(t *AnthropicThinking) string {
-	if t == nil {
-		return "minimal"
-	}
-	switch strings.ToLower(t.Type) {
-	case "enabled", "adaptive", "auto":
-		switch {
-		case t.BudgetTokens <= 2048:
-			return "low"
-		case t.BudgetTokens <= 8192:
-			return "medium"
-		default:
-			return "high"
-		}
-	default:
-		return "minimal"
-	}
 }
 
 func responsesTextMessage(role, text string) map[string]any {

@@ -15,17 +15,23 @@ import (
 // Server is the top-level HTTP server. It owns the config, store, and the
 // underlying *http.Server so it can be shut down cleanly.
 type Server struct {
-	cfg        *config.Config
-	store      *store.Store
-	httpClient *http.Client
-	srv        *http.Server
+	cfg          *config.Config
+	store        *store.Store
+	httpClient   *http.Client
+	srv          *http.Server
+	effortLevels *EffortLevelsCache
 }
 
 // New constructs a Server. The store may be nil if request logging is disabled.
 func New(cfg *config.Config, st *store.Store) *Server {
+	dataDir := ""
+	if cfg != nil {
+		dataDir = cfg.DataDir()
+	}
 	return &Server{
-		cfg:   cfg,
-		store: st,
+		cfg:          cfg,
+		store:        st,
+		effortLevels: LoadEffortLevelsCache(dataDir),
 		httpClient: &http.Client{
 			Timeout: 0, // streaming: no global timeout (per-request override used)
 			Transport: &http.Transport{
