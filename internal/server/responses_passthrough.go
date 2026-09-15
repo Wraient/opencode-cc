@@ -83,6 +83,10 @@ func (s *Server) proxyResponsesPassthrough(
 			http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
 		return
 	}
+	if newResp, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,
+		incomingModel, targetModel, in.Stream, start); ok {
+		resp = newResp
+	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if in.Stream && resp.StatusCode < http.StatusBadRequest &&

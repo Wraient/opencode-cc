@@ -1,0 +1,176 @@
+package server
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/Kiowx/opencode-cc/internal/config"
+	"github.com/Kiowx/opencode-cc/internal/store"
+)
+
+const staleReasoningUpstreamErr = `{"model":"muse-spark-1.3-contributor-free","error":{"param":null,"type":"invalid_request_error","message":"Error from provider (Console): Upstream request failed: [invalid_request_error] reasoning ` +
+	"`encrypted_content`" + ` was not issued to this caller"}}`
+
+const recoveryOKResponse = `{"id":"resp_rec","object":"response","status":"completed",
+	"model":"muse-spark-1.3-contributor-free","output":[
+		{"id":"msg_r","type":"message","status":"completed","role":"assistant",
+		 "content":[{"type":"output_text","text":"recovered","annotations":[]}]}],
+	"usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24,
+		"input_tokens_details":{},"output_tokens_details":{}}}`
+
+// recoveryTestStack serves the full proxy mux with model * mapped to the
+// Responses-native muse model and the given mock upstream.
+func recoveryTestStack(t *testing.T, upstream http.Handler) *httptest.Server {
+	t.Helper()
+	zen := httptest.NewServer(upstream)
+	t.Cleanup(zen.Close)
+	cfg := config.Default()
+	cfg.UpstreamBase = zen.URL
+	cfg.ZenAPIKey = "zen-test-key"
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "muse-spark-1.3-contributor-free"}}
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(cfg, st)
+	httpSrv := httptest.NewServer(srv.Handler(nil, nil))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+func TestPassthroughRetriesStaleReasoning(t *testing.T) {
+	var hits int
+	var secondBody string
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), "encrypted_content") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, staleReasoningUpstreamErr)
+			return
+		}
+		secondBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, recoveryOKResponse)
+	})
+	httpSrv := recoveryTestStack(t, upstream)
+
+	clientBody := `{"model":"client-model","stream":false,"store":false,
+		"input":[
+			{"type":"reasoning","id":"rs_stale","encrypted_content":"BLOBSTALE","summary":[]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}
+		]}`
+	resp, err := http.Post(httpSrv.URL+"/v1/responses", "application/json", strings.NewReader(clientBody))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("client must get 200 after transparent retry, got %d: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "recovered") {
+		t.Errorf("client must get the recovered response: %s", raw)
+	}
+	if hits != 2 {
+		t.Fatalf("expected exactly 1 retry (2 upstream hits), got %d", hits)
+	}
+	if strings.Contains(secondBody, "encrypted_content") || strings.Contains(secondBody, "rs_stale") {
+		t.Errorf("retry must strip blob and dangling id: %s", secondBody)
+	}
+	if !strings.Contains(secondBody, `"type":"message"`) {
+		t.Errorf("retry must keep real input items: %s", secondBody)
+	}
+}
+
+func TestPassthroughRelaysUnrelated400(t *testing.T) {
+	var hits int
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"bad tool_choice"}}`)
+	})
+	httpSrv := recoveryTestStack(t, upstream)
+
+	resp, err := http.Post(httpSrv.URL+"/v1/responses", "application/json", strings.NewReader(
+		`{"model":"client-model","stream":false,"input":"hi"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unrelated 400 must relay as 400, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(raw), "bad tool_choice") {
+		t.Errorf("error body must pass through intact: %s", raw)
+	}
+	if hits != 1 {
+		t.Errorf("no retry expected for unrelated errors, hits=%d", hits)
+	}
+}
+
+func TestPassthroughSkipsRetryWhenNothingToStrip(t *testing.T) {
+	var hits int
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, staleReasoningUpstreamErr)
+	})
+	httpSrv := recoveryTestStack(t, upstream)
+
+	// Stateful chain: poison lives server-side behind previous_response_id,
+	// the visible input has no blobs, so a strip+retry cannot help.
+	resp, err := http.Post(httpSrv.URL+"/v1/responses", "application/json", strings.NewReader(
+		`{"model":"client-model","stream":false,"previous_response_id":"resp_old",
+		  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("must relay original 400, got %d", resp.StatusCode)
+	}
+	if hits != 1 {
+		t.Errorf("must not retry when nothing strippable, hits=%d", hits)
+	}
+}
+
+func TestBridgeRelaysStaleReasoning400WithoutRetry(t *testing.T) {
+	// The bridge builds fresh input without reasoning blobs, so a signature
+	// 400 there has nothing to strip: it must relay (this also pins that the
+	// bridge hook never loops or breaks the error path).
+	var hits int
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, staleReasoningUpstreamErr)
+	})
+	httpSrv := recoveryTestStack(t, upstream)
+
+	resp, err := http.Post(httpSrv.URL+"/v1/messages", "application/json", bytes.NewReader(bridgeAnthropicBody(t, false)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("must relay 400, got %d: %s", resp.StatusCode, raw)
+	}
+	if hits != 1 {
+		t.Errorf("bridge must not retry blob-free requests, hits=%d", hits)
+	}
+}

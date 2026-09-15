@@ -174,7 +174,7 @@ func TestPassthroughNonStreamRelaysBytes(t *testing.T) {
 	}
 }
 
-func TestChatAndMessagesRejectResponsesOnlyModel(t *testing.T) {
+func TestChatRejectsButMessagesBridgesResponsesOnlyModel(t *testing.T) {
 	st := mustTestStore(t)
 	cfg := config.Default()
 	cfg.Upstreams = []config.Upstream{{BaseURL: "http://127.0.0.1:1", APIKey: "k", Enabled: true}}
@@ -195,8 +195,13 @@ func TestChatAndMessagesRejectResponsesOnlyModel(t *testing.T) {
 		strings.NewReader(`{"model":"muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}]}`))
 	arec := httptest.NewRecorder()
 	srv.Proxy().ServeHTTP(arec, areq)
-	if arec.Code != http.StatusBadRequest {
-		t.Errorf("messages status = %d, want 400", arec.Code)
+	// /v1/messages no longer fail-fasts: it bridges to upstream /v1/responses.
+	// The test upstream is dead (127.0.0.1:1), so the bridge surfaces 502.
+	if arec.Code != http.StatusBadGateway {
+		t.Errorf("messages status = %d, want 502 (bridge attempted)", arec.Code)
+	}
+	if strings.Contains(arec.Body.String(), "Responses-API-only") {
+		t.Errorf("messages body = %q, must not fail fast anymore", arec.Body.String())
 	}
 }
 

@@ -1,0 +1,343 @@
+package proxy
+
+// Anthropic <-> Responses translation for Responses-native models.
+//
+// Meta muse-spark* models are served ONLY on the upstream Responses API, so
+// POST /v1/messages for them is translated here instead of failing fast:
+// Anthropic request -> Responses request (this file, Convert...Body),
+// upstream /v1/responses, Responses response -> Anthropic response
+// (ConvertResponsesToAnthropicResponse, ResponsesToAnthropicStreamer).
+//
+// Fidelity notes (v1): thinking blocks are dropped from history (Responses
+// has no echo requirement); tool_result images ride along as follow-up
+// input_image items (function_call_output is string-only); stop_sequences
+// are not forwarded (Responses has no equivalent); temperature/top_p pass
+// through.
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ConvertAnthropicToResponsesBody builds an upstream Responses API request
+// body from an Anthropic Messages request for targetModel. promptCacheKey is
+// an opaque sticky key (may be "") — when set it is forwarded as the upstream
+// prompt_cache_key so repeated turns in one session hit provider prompt cache.
+func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel, promptCacheKey string) ([]byte, error) {
+	if in == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	body := map[string]any{
+		"model":  targetModel,
+		"stream": in.Stream,
+		"store":  false,
+	}
+	if len(in.System.Blocks) > 0 {
+		var parts []string
+		for _, b := range in.System.Blocks {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		if len(parts) > 0 {
+			body["instructions"] = strings.Join(parts, "\n")
+		}
+	}
+	if in.MaxTokens > 0 {
+		body["max_output_tokens"] = in.MaxTokens
+	}
+	// Reasoning effort: absent/disabled thinking means a plain tool-loop turn,
+	// which runs ~4x faster on "minimal" than the upstream default (1.6s vs
+	// ~7s on a trivial prompt, 2026-09-15 probe). Enabled thinking budgets
+	// map up by size.
+	body["reasoning"] = map[string]any{"effort": anthropicThinkingEffort(in.Thinking)}
+	if promptCacheKey != "" {
+		body["prompt_cache_key"] = promptCacheKey
+		body["prompt_cache_retention"] = "24h"
+	}
+	if in.Temperature != nil {
+		body["temperature"] = *in.Temperature
+	}
+	if in.TopP != nil {
+		body["top_p"] = *in.TopP
+	}
+	items, err := anthropicMessagesToResponsesInput(in.Messages)
+	if err != nil {
+		return nil, err
+	}
+	body["input"] = items
+	var tools []any
+	for _, t := range in.Tools {
+		if t.Name == "" {
+			continue
+		}
+		tools = append(tools, map[string]any{
+			"type":        "function",
+			"name":        t.Name,
+			"description": t.Description,
+			"parameters":  ensureResponsesSchema(t.InputSchema),
+		})
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
+	}
+	// Zen Responses currently accepts only tool_choice "auto".
+	body["tool_choice"] = "auto"
+	return jsonMarshal(body)
+}
+
+// anthropicMessagesToResponsesInput maps conversation history to Responses
+// input items. Assistant text uses output_text parts; tool_use/tool_result
+// become function_call/function_call_output items sharing the call id.
+func anthropicMessagesToResponsesInput(messages []AnthropicMessage) ([]any, error) {
+	items := []any{}
+	for _, m := range messages {
+		role := m.Role
+		if role != "user" && role != "assistant" {
+			role = "user"
+		}
+		if m.Content.IsStr {
+			items = append(items, responsesTextMessage(role, m.Content.Text))
+			continue
+		}
+		var assistantText []string
+		flushAssistantText := func() {
+			if len(assistantText) == 0 {
+				return
+			}
+			items = append(items, responsesTextMessage("assistant", strings.Join(assistantText, "")))
+			assistantText = nil
+		}
+		for _, b := range m.Content.Blocks {
+			switch b.Type {
+			case "text":
+				if role == "assistant" {
+					assistantText = append(assistantText, b.Text)
+				} else {
+					items = append(items, responsesTextMessage(role, b.Text))
+				}
+			case "image":
+				flushAssistantText()
+				if url := anthropicImageURL(b.Source); url != "" {
+					items = append(items, map[string]any{
+						"type": "message", "role": role,
+						"content": []any{map[string]any{
+							"type": "input_image", "image_url": url,
+						}},
+					})
+				}
+			case "tool_use":
+				flushAssistantText()
+				callID := b.ID
+				if callID == "" {
+					callID = "call_" + randHex(24)
+				}
+				args := string(b.Input)
+				if strings.TrimSpace(args) == "" {
+					args = "{}"
+				}
+				items = append(items, map[string]any{
+					"type": "function_call", "call_id": callID,
+					"name": b.Name, "arguments": args,
+				})
+			case "tool_result":
+				flushAssistantText()
+				callID := b.ToolUseID
+				if callID == "" {
+					return nil, fmt.Errorf("tool_result block without tool_use_id")
+				}
+				items = append(items, map[string]any{
+					"type": "function_call_output", "call_id": callID,
+					"output": anthropicToolResultText(b),
+				})
+				// function_call_output is string-only: any image parts ride
+				// along as follow-up user input_image items so visual tool
+				// results (screenshots, Read images) still reach the model.
+				for _, c := range anthropicToolResultImages(b) {
+					items = append(items, map[string]any{
+						"type": "message", "role": "user",
+						"content": []any{map[string]any{
+							"type": "input_image", "image_url": c,
+						}},
+					})
+				}
+			case "thinking":
+				// No Responses echo requirement; dropped.
+				continue
+			default:
+				// server_tool_use, web_search_tool_result and anything
+				// server-side never appear in client requests; ignore.
+				continue
+			}
+		}
+		flushAssistantText()
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("no convertible messages in request")
+	}
+	return items, nil
+}
+
+// anthropicThinkingEffort maps Claude extended-thinking to a Responses
+// reasoning effort (see ConvertAnthropicToResponsesBody).
+func anthropicThinkingEffort(t *AnthropicThinking) string {
+	if t == nil {
+		return "minimal"
+	}
+	switch strings.ToLower(t.Type) {
+	case "enabled", "adaptive", "auto":
+		switch {
+		case t.BudgetTokens <= 2048:
+			return "low"
+		case t.BudgetTokens <= 8192:
+			return "medium"
+		default:
+			return "high"
+		}
+	default:
+		return "minimal"
+	}
+}
+
+func responsesTextMessage(role, text string) map[string]any {
+	partType := "input_text"
+	if role == "assistant" {
+		partType = "output_text"
+	}
+	return map[string]any{
+		"type": "message", "role": role,
+		"content": []any{map[string]any{"type": partType, "text": text}},
+	}
+}
+
+func anthropicImageURL(src *AnthropicImageSource) string {
+	if src == nil {
+		return ""
+	}
+	if src.URL != "" {
+		return src.URL
+	}
+	if src.Type == "base64" && src.Data != "" {
+		media := src.MediaType
+		if media == "" {
+			media = "image/png"
+		}
+		return "data:" + media + ";base64," + src.Data
+	}
+	return ""
+}
+
+// anthropicToolResultText keeps text parts; image parts have no
+// function_call_output representation (see anthropicToolResultImages).
+func anthropicToolResultText(b AnthropicContent) string {
+	if b.Content == nil {
+		return ""
+	}
+	if b.Content.IsStr {
+		return b.Content.Text
+	}
+	var parts []string
+	for _, c := range b.Content.Blocks {
+		if c.Type == "text" {
+			parts = append(parts, c.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// anthropicToolResultImages extracts image URLs (data URI or remote) from a
+// tool_result block for forwarding as input_image items.
+func anthropicToolResultImages(b AnthropicContent) []string {
+	if b.Content == nil || b.Content.IsStr {
+		return nil
+	}
+	var out []string
+	for _, c := range b.Content.Blocks {
+		if c.Type == "image" {
+			if url := anthropicImageURL(c.Source); url != "" {
+				out = append(out, url)
+			}
+		}
+	}
+	return out
+}
+
+func ensureResponsesSchema(raw jsonRawMessage) any {
+	if len(raw) == 0 {
+		return map[string]any{"type": "object"}
+	}
+	var v any
+	if err := jsonUnmarshal(raw, &v); err != nil {
+		return map[string]any{"type": "object"}
+	}
+	if m, ok := v.(map[string]any); ok {
+		if _, ok := m["type"]; !ok {
+			m["type"] = "object"
+		}
+		return m
+	}
+	return map[string]any{"type": "object"}
+}
+
+// ConvertResponsesToAnthropicResponse translates a non-streaming upstream
+// Responses API response into an Anthropic Messages response.
+func ConvertResponsesToAnthropicResponse(raw []byte, incomingModel string) (*AnthropicResponse, error) {
+	var in ResponsesResponse
+	if err := jsonUnmarshal(raw, &in); err != nil {
+		return nil, fmt.Errorf("could not parse upstream Responses response: %w", err)
+	}
+	out := &AnthropicResponse{
+		ID:    "msg_" + randHex(24),
+		Type:  "message",
+		Role:  "assistant",
+		Model: incomingModel,
+	}
+	stop := "end_turn"
+	if in.Status == "incomplete" {
+		stop = "max_tokens"
+	}
+	out.StopReason = &stop
+	for _, item := range in.Output {
+		switch item.Type {
+		case "message":
+			for _, p := range item.Content {
+				if p.Type == "output_text" && p.Text != "" {
+					out.Content = append(out.Content, AnthropicContent{Type: "text", Text: p.Text})
+				}
+			}
+		case "function_call":
+			callID := item.CallID
+			if callID == "" {
+				callID = "call_" + randHex(24)
+			}
+			args := item.Arguments
+			if strings.TrimSpace(args) == "" {
+				args = "{}"
+			}
+			out.Content = append(out.Content, AnthropicContent{
+				Type: "tool_use", ID: callID, Name: item.Name,
+				Input: jsonRawMessage(args),
+			})
+			toolStop := "tool_use"
+			out.StopReason = &toolStop
+		default:
+			// reasoning summaries and anything else are dropped.
+			continue
+		}
+	}
+	if in.Usage != nil {
+		out.Usage = AnthropicUsage{
+			InputTokens:          in.Usage.InputTokens,
+			OutputTokens:         in.Usage.OutputTokens,
+			CacheReadInputTokens: in.Usage.InputTokensDetails.CachedTokens,
+		}
+	}
+	if out.StopReason != nil && *out.StopReason == "tool_use" {
+		// keep tool_use even on incomplete streams; max_tokens only wins
+		// when no tool call was produced.
+	} else if in.Status == "incomplete" {
+		maxStop := "max_tokens"
+		out.StopReason = &maxStop
+	}
+	return out, nil
+}

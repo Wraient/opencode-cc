@@ -41,11 +41,20 @@ func (s *Server) Proxy() http.HandlerFunc {
 		nativeAnthropic := cfg.NativeAnthropic
 		timeoutSeconds := cfg.RequestTimeoutSeconds
 		targetModel := s.cfg.ResolveModel(areq.Model)
-		// Responses-native models are served ONLY on upstream /v1/responses;
-		// the Messages path would relay an opaque upstream 500, so fail fast.
+		// Responses-native models (muse-spark*) are served ONLY on upstream
+		// /v1/responses: bridge this Messages request through the translation
+		// in anthropic_responses.go instead of relaying an opaque upstream 500.
 		if proxy.IsResponsesNativeModel(targetModel) {
-			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
-				targetModel+" is Responses-API-only; use POST /v1/responses")
+			// Never empty: the upstream gates free-tier on x-opencode-session.
+			stickyHint := bridgeSessionKey(proxy.AnthropicPromptCacheHint(&areq))
+			bridgeUpstream, bridgeKey, ok := s.cfg.NextUpstreamForKey(stickyHint)
+			if !ok {
+				writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "no upstream API key configured. Set one in the web panel (Settings → upstreams).")
+				s.logFailed(ctx, r, areq.Model, targetModel, areq.Stream, http.StatusUnauthorized, "no upstream api key", body, time.Since(start))
+				return
+			}
+			s.proxyAnthropicViaResponses(w, r, body, &areq, bridgeUpstream, bridgeKey,
+				areq.Model, targetModel, stickyHint, timeoutSeconds, start)
 			return
 		}
 		hasWebSearch := shouldUseWebSearchShim(&areq)

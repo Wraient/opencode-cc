@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -87,7 +88,8 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 			if !isTimeoutErr(err) || attempt >= 2 {
 				return nil, err
 			}
-			log.Printf("opencode-cc: upstream attempt %d timeout (%s), retrying", attempt+1, truncateErr(err.Error()))
+			log.Printf("opencode-cc: upstream attempt %d timeout (%s), retrying [%s]",
+				attempt+1, truncateErr(err.Error()), summarizeUpstreamBody(body))
 			continue
 		}
 		lastErr = nil
@@ -119,6 +121,90 @@ type upstreamStatusError struct {
 
 func (e *upstreamStatusError) Error() string {
 	return e.detail + " (after retry)"
+}
+
+// summarizeUpstreamBody renders a one-line shape summary of an upstream
+// request body for stall forensics: sizes and item counts only, never content.
+// Best-effort by design — anything unexpected degrades to "unparsed".
+func summarizeUpstreamBody(body []byte) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "unparsed"
+	}
+	var sb strings.Builder
+	model, _ := unquoteJSON(payload["model"])
+	stream := strings.TrimSpace(string(payload["stream"]))
+	sb.WriteString("model=" + model + " stream=" + stream)
+	for _, key := range []string{"input", "messages"} {
+		raw, ok := payload[key]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(raw)), `"`) {
+			sb.WriteString(" " + key + "=str")
+			continue
+		}
+		var items []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			continue
+		}
+		counts := map[string]int{}
+		order := []string{}
+		for _, item := range items {
+			kind := firstJSONField(item, "type", "role")
+			if kind == "" {
+				kind = "?"
+			}
+			if _, seen := counts[kind]; !seen {
+				order = append(order, kind)
+			}
+			counts[kind]++
+		}
+		sb.WriteString(" " + key + "=" + strconv.Itoa(len(items)) + "{")
+		for i, k := range order {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			sb.WriteString(k + ":" + strconv.Itoa(counts[k]))
+		}
+		sb.WriteString("}")
+	}
+	if raw, ok := payload["tools"]; ok && len(raw) > 0 {
+		var tools []any
+		if err := json.Unmarshal(raw, &tools); err == nil {
+			sb.WriteString(" tools=" + strconv.Itoa(len(tools)))
+		}
+	}
+	if raw, ok := payload["reasoning"]; ok && len(raw) > 0 {
+		var reasoning struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.Unmarshal(raw, &reasoning); err == nil && reasoning.Effort != "" {
+			sb.WriteString(" effort=" + reasoning.Effort)
+		}
+	}
+	if _, ok := payload["previous_response_id"]; ok {
+		sb.WriteString(" chained")
+	}
+	sb.WriteString(" bytes=" + strconv.Itoa(len(body)))
+	return sb.String()
+}
+
+func unquoteJSON(raw json.RawMessage) (string, bool) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func firstJSONField(item map[string]json.RawMessage, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := unquoteJSON(item[k]); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func isTimeoutErr(err error) bool {

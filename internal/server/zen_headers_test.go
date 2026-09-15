@@ -62,10 +62,20 @@ func TestSetZenSessionHeadersSynthesizes(t *testing.T) {
 }
 
 func TestSetZenSessionHeadersOmitsUnknownSession(t *testing.T) {
+	// Since 2026-09 Zen hard-rejects free-tier requests without
+	// x-opencode-session (MissingSessionID), so the header is never
+	// omitted: with no sticky key a single process-stable fallback id
+	// is used instead (stable, so provider pinning stays coherent).
 	up, _ := http.NewRequest(http.MethodPost, "http://x/v1/chat/completions", nil)
 	setZenSessionHeaders(up, http.Header{}, "")
-	if got := up.Header.Get("x-opencode-session"); got != "" {
-		t.Errorf("session = %q, want omitted (random ids defeat stickiness)", got)
+	got := up.Header.Get("x-opencode-session")
+	if !strings.HasPrefix(got, "ses_") || len(got) != 30 {
+		t.Fatalf("session = %q, want stock ses_ fallback format", got)
+	}
+	up2, _ := http.NewRequest(http.MethodPost, "http://x/v1/chat/completions", nil)
+	setZenSessionHeaders(up2, http.Header{}, "")
+	if up2.Header.Get("x-opencode-session") != got {
+		t.Errorf("fallback session not stable across calls")
 	}
 }
 

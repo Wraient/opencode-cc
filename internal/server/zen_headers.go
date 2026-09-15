@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // x-opencode-* identity headers, byte-identical to what the official opencode
@@ -44,9 +45,11 @@ const (
 // and only then synthesize in the identical format:
 //   - session: ses_ + hash of the route's sticky key (stable per client
 //     session across turns AND proxy restarts, so provider pins survive).
-//     Omitted when no sticky key exists — Zen then falls back to
-//     workspace/IP, which is strictly better than a random per-request id
-//     that would defeat stickiness.
+//     When no sticky key exists, a single process-stable fallback id is
+//     used (never omitted): since 2026-09 Zen hard-rejects free-tier
+//     requests without x-opencode-session (MissingSessionID), and one
+//     stable id keeps provider pinning coherent for single-user proxies.
+//     This matches the bridge behavior in anthropic_responses.go.
 //   - request: msg_ + 26 random alphanumerics, one per upstream call.
 //   - project: never fabricated, omitted when unknown.
 //   - client: stock "cli" when the client sent none.
@@ -58,6 +61,8 @@ func setZenSessionHeaders(upReq *http.Request, down http.Header, stickyKey strin
 		upReq.Header.Set(zenHeaderSession, v)
 	} else if v := synthSessionID(stickyKey); v != "" {
 		upReq.Header.Set(zenHeaderSession, v)
+	} else {
+		upReq.Header.Set(zenHeaderSession, fallbackSessionID())
 	}
 	if v := strings.TrimSpace(down.Get(zenHeaderRequest)); v != "" {
 		upReq.Header.Set(zenHeaderRequest, v)
@@ -85,6 +90,29 @@ func synthSessionID(stickyKey string) string {
 }
 
 const synthIDAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+// fallbackSessionID is the process-stable session id used when neither the
+// downstream client nor the sticky key yields one. Stable (not per-request)
+// so provider pinning stays coherent. Same alphabet as the bridge fallback.
+var (
+	fallbackSessionOnce sync.Once
+	fallbackSessionVal  string
+)
+
+func fallbackSessionID() string {
+	fallbackSessionOnce.Do(func() {
+		var b [26]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			fallbackSessionVal = "ses_00000000000000000000000000"
+			return
+		}
+		for i, v := range b {
+			b[i] = synthIDAlphabet[int(v)%len(synthIDAlphabet)]
+		}
+		fallbackSessionVal = "ses_" + string(b[:])
+	})
+	return fallbackSessionVal
+}
 
 // synthRequestID returns a stock-formatted request id (msg_ + 26 alphanumerics).
 func synthRequestID() string {
