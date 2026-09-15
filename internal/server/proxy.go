@@ -455,6 +455,10 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	// Flush headers immediately: without this net/http holds them (plus the
+	// first ~2KB of events) until the buffer fills or the stream ends, which
+	// makes TTFB equal total time on small responses.
+	flusher.Flush()
 
 	var stopSeq *string
 	stopReason := ""
@@ -465,6 +469,9 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 	if err != nil {
 		return
 	}
+	// message_start + ping are already emitted (converter flushes its own
+	// buffer); push them to the client now, before the first upstream chunk.
+	flusher.Flush()
 	conv.RestrictTools(anthropicToolNamesFromBody(reqBody))
 
 	// Read the upstream body, transparently decompressing gzip if needed.
@@ -483,7 +490,14 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 			outputTok = chunk.Usage.CompletionTokens
 			cachedInputTok = chunk.Usage.CachedPromptTokens()
 		}
-		return conv.HandleChunk(chunk)
+		if err := conv.HandleChunk(chunk); err != nil {
+			return err
+		}
+		// Push every translated chunk to the client immediately (matches the
+		// other stream relays). The converter only flushes its own bufio
+		// into the ResponseWriter; without this the HTTP layer holds bytes.
+		flusher.Flush()
+		return nil
 	})
 
 	// Finalize the stream: emit content_block_stop (if open) + message_delta
