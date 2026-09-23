@@ -77,6 +77,18 @@ func TestPromptCacheConfigPatch(t *testing.T) {
 	}
 }
 
+func TestBridgeDefaultEffortConfigPatch(t *testing.T) {
+	c := Default()
+	if c.BridgeDefaultEffort != "xhigh" {
+		t.Fatalf("default bridge effort = %q, want xhigh", c.BridgeDefaultEffort)
+	}
+	minimal := "MINIMAL"
+	c.ApplyPatch(&Patch{BridgeDefaultEffort: &minimal})
+	if got := c.Snapshot().BridgeDefaultEffort; got != "minimal" {
+		t.Fatalf("patched bridge effort = %q, want minimal", got)
+	}
+}
+
 func TestWebSearchModelConfigPatch(t *testing.T) {
 	c := Default()
 	if got := c.ResolveWebSearchModel("glm-main"); got != "glm-main" {

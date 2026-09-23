@@ -24,6 +24,32 @@ func newTestAPI(t *testing.T, cfg *config.Config) http.Handler {
 	return mux
 }
 
+func TestHealthEndpoints(t *testing.T) {
+	mux := newTestAPI(t, config.Default())
+
+	for _, path := range []string{"/api/health", "/healthz"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Fatalf("content-type = %q, want application/json", ct)
+			}
+			var out map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if out["ok"] != true {
+				t.Fatalf("ok = %v, want true: %s", out["ok"], rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestEmptyListEndpointsReturnArrays(t *testing.T) {
 	mux := newTestAPI(t, config.Default())
 

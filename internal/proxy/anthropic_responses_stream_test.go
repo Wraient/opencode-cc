@@ -105,6 +105,42 @@ func TestResponsesStreamTextAndToolCall(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamBlockIndexes(t *testing.T) {
+	events := runResponsesStream(t, []string{"get_time"}, [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Hi"}`},
+		{"response.output_item.added", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"get_time"}}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{}"}`},
+		{"response.output_item.done", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"get_time","arguments":"{}"}}`},
+		{"response.output_text.delta", `{"item_id":"c","delta":"Bye"}`},
+		{"response.output_text.done", `{"item_id":"c"}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":3}}}}`},
+	})
+	type ti struct {
+		typ string
+		idx int
+	}
+	var got []ti
+	for _, e := range events {
+		switch e.Type {
+		case "content_block_start", "content_block_delta", "content_block_stop":
+			got = append(got, ti{e.Type, e.Index})
+		}
+	}
+	want := []ti{
+		{"content_block_start", 0}, {"content_block_delta", 0}, {"content_block_stop", 0},
+		{"content_block_start", 1}, {"content_block_delta", 1}, {"content_block_stop", 1},
+		{"content_block_start", 2}, {"content_block_delta", 2}, {"content_block_stop", 2},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("block events:\n got %v\nwant %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("block event %d:\n got %+v\nwant %+v\nfull: %v", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestResponsesStreamDropsUndeclaredToolAndSkipsPing(t *testing.T) {
 	var buf bytes.Buffer
 	bw := bufio.NewWriter(&buf)

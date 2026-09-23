@@ -10,30 +10,37 @@ Repo (our patched fork): https://github.com/Wraient/opencode-cc
 (default branch `patch/opencode-user-agent`; upstream:
 https://github.com/Kiowx/opencode-cc)
 
+> **Current free-harness patch (2026-09-23):** free models require the stock
+> OpenCode installation UA `opencode/latest/<version>/cli`, a canonical
+> `ses_<12 lowercase hex><14 base62>` session, `stream:true`, and lowercase
+> `shell`/`read` tool markers. The proxy now supplies all of these and
+> aggregates forced SSE back to JSON for non-streaming clients. See
+> `internal/proxy/free_tier.go`, `internal/proxy/stream_aggregate.go`, and
+> `~/.config/opencode-cc/README.md`.
+
 ## File map
 
 | What | Where |
 |---|---|
 | Binary | `~/.local/bin/opencode-cc` |
-| Source (patched fork) | Local clone `/tmp/opencode/opencode-cc` (remotes: `origin` = Wraient/opencode-cc, `upstream` = Kiowx/opencode-cc; **volatile — see Rebuild**) |
+| Source (patched fork) | `~/Projects/opencode-cc` (branch `patch/opencode-user-agent`; origin = Wraient/opencode-cc, upstream = Kiowx/opencode-cc) |
 | systemd user unit | `~/.config/systemd/user/opencode-cc.service` |
 | API key env file | `~/.config/opencode-cc/env` (`ZEN_API_KEY=sk-...`, chmod 600) |
 | Config backups | `~/.grok/config.toml.bak-occ-20260821`, `~/.codex/config.toml.bak-occ-20260821`, `~/.config/opencode/opencode.json.bak-occ-20260821` |
 
 ## The patch (why this binary differs from upstream)
 
-All upstream `User-Agent` headers were changed from `opencode-cc/1.x` to the real
-opencode fingerprint:
+All upstream `User-Agent` headers use the current OpenCode installation format:
 
 ```
-opencode/<installed-version> ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13
+opencode/latest/<installed-version>/cli
 ```
 
-Version is auto-detected at startup via `opencode --version` (fallback `1.18.15`).
-Patch lives in `internal/server/useragent.go` (`ocUA()`), used by `proxy.go`,
-`openai_proxy.go`, `responses_proxy.go`, `web_search_proxy.go`.
-If you ever rebuild from unpatched upstream source, the UA reverts to
-`opencode-cc/1.x` — re-apply the patch or copy `useragent.go` + call sites.
+The current stable install is detected at startup (fallback `2.0.12`). The
+implementation is in `internal/server/useragent.go` (`ocUA()`), used by every
+LLM upstream path. The former `opencode/<version> ai-sdk/...` string is rejected
+by the current free-tier gate; do not rebuild from vanilla source without this
+patch.
 
 ## Service management
 
@@ -61,9 +68,15 @@ Client auth is not enforced (`require_api_key: false`) — any key string works
 
 ## Wired harnesses
 
-- **grok** (`~/.grok/config.toml`): `[model."*"]` entries named `* (OpenCode CC)`
-  plus `muse-spark-1.2-contributor-free-occ` (renamed to avoid clashing with the
-  older cliproxy entry). Backend: `chat_completions`.
+- **grok** (`~/.grok/config.toml`): default
+  `muse-spark-1.3-contributor-free-occ` through
+  `http://127.0.0.1:8787/v1` with `api_backend = "responses"` and
+  `reasoning_effort = "xhigh"`. Backup:
+  `~/.grok/config.toml.bak-muse-xhigh-20260924`.
+- **claude** (`~/.claude/settings.json`): default
+  `muse-spark-1.3-contributor-free` through `http://127.0.0.1:8787`, with
+  `effortLevel = "xhigh"` and custom gateway model discovery enabled. Backup:
+  `~/.claude/settings.json.bak-muse-xhigh-20260924`.
 - **codex** (`~/.codex/config.toml`): provider `opencode-cc` (`wire_api = "responses"`),
   profiles `occ-muse`, `occ-xpreview`, `occ-pickle`, `occ-mimo`, `occ-hy3`,
   `occ-nemotron-ultra`, `occ-nemotron`, `occ-laguna`. Use: `codex -p occ-muse`.
@@ -100,10 +113,12 @@ Deliberately excluded: `muse-spark-1.2` (paid), `deepseek-v4-flash-free`
    `curl -s http://127.0.0.1:8787/v1/models | python3 -m json.tool`
    then update the harness config entry.
 
-5. **Rate limits suddenly worse than opencode's**
-   Check the binary still has the UA patch:
-   `strings ~/.local/bin/opencode-cc | grep 'provider-utils'` should hit.
-   If not, rebuild per Rebuild section.
+5. **Free models return `403 FreeTierError`**
+   The current binary must contain the OpenCode installation UA and free-tier
+   request adapter. Check `strings ~/.local/bin/opencode-cc | grep
+   'opencode/latest'`, then inspect `journalctl --user -u opencode-cc` for the
+   upstream status. Direct curl is not a valid free-tier test because Zen
+   requires the proxy's canonical session/stream/tool shape.
 
 6. **Configs broken after an agent edited them**
    Restore from the `.bak-occ-20260821` files listed above, then validate:
@@ -115,12 +130,20 @@ Deliberately excluded: `muse-spark-1.2` (paid), `deepseek-v4-flash-free`
 
 ## Rebuild from source
 
+Use the safe staging sequence; never run a second binary on port 8787:
+
 ```bash
-git clone https://github.com/Wraient/opencode-cc /tmp/opencode/opencode-cc
-git -C /tmp/opencode/opencode-cc remote add upstream https://github.com/Kiowx/opencode-cc
-# patch is already on the default branch (patch/opencode-user-agent) — no manual re-apply needed
-cd /tmp/opencode/opencode-cc && go build -o ~/.local/bin/opencode-cc .
-systemctl --user restart opencode-cc
+cd ~/Projects/opencode-cc
+go build ./... && go test ./...
+go build -o /tmp/opencode-cc-stage .
+export $(grep -E '^(ZEN_API_KEY|OPENCODE_CC_)' ~/.config/opencode-cc/env | xargs)
+OPENCODE_CC_LISTEN='127.0.0.1:18787' nohup /tmp/opencode-cc-stage \
+  -data /tmp/cc-stage-data >/tmp/cc-stage.log 2>&1 &
+# Exercise Claude Code, Grok Build, /v1/messages, /v1/chat/completions,
+# and /v1/responses on port 18787 first.
+systemctl --user stop opencode-cc
+cp /tmp/opencode-cc-stage ~/.local/bin/opencode-cc
+systemctl --user start opencode-cc
 ```
 
 A pre-built patched copy may still exist at `/tmp/opencode/opencode-cc-patched`.
@@ -128,7 +151,11 @@ A pre-built patched copy may still exist at `/tmp/opencode/opencode-cc-patched`.
 ## Quick smoke test
 
 ```bash
-curl -s -m 30 http://127.0.0.1:8787/v1/chat/completions \
+curl -fsS http://127.0.0.1:8787/api/health
+curl -sS -m 120 http://127.0.0.1:8787/v1/messages \
   -H 'content-type: application/json' -H 'Authorization: Bearer local' \
-  -d '{"model":"nemotron-3.5-lightning-free","max_tokens":10,"messages":[{"role":"user","content":"say ok"}]}'
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"muse-spark-1.3-contributor-free","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"Reply with exactly OK"}]}'
+claude-oc -p 'Reply with exactly OK' --no-session-persistence --output-format json
+grok -p 'Reply with exactly OK' --no-plan --max-turns 1 --output-format json
 ```

@@ -77,7 +77,7 @@ export default function Settings() {
   async function savePanelToken() {
     setPanelTokenError("");
     if (newPanelToken !== confirmPanelToken) {
-      setPanelTokenError("两次输入的密码不一致");
+      setPanelTokenError("Passwords do not match");
       return;
     }
     setSaving(true);
@@ -86,7 +86,7 @@ export default function Settings() {
       setCfg(updated);
       setNewPanelToken("");
       setConfirmPanelToken("");
-      setPanelTokenFlash(newPanelToken === "" ? "面板密码已清除。" : "面板密码已更新。");
+      setPanelTokenFlash(newPanelToken === "" ? "Panel password cleared." : "Panel password updated.");
       setTimeout(() => setPanelTokenFlash(""), 2500);
       // If a password was just set, reload so AuthGuard picks up the new state.
       if (newPanelToken !== "") setTimeout(() => window.location.reload(), 1000);
@@ -138,7 +138,7 @@ export default function Settings() {
         );
       }
       setDirty(false);
-      setFlash("已保存。");
+      setFlash("Saved.");
       setTimeout(() => setFlash(""), 2500);
     } finally {
       setSaving(false);
@@ -172,7 +172,7 @@ export default function Settings() {
   if (!cfg) {
     return (
       <div className="flex items-center justify-center py-24 text-slate-500 gap-2">
-        <Spinner /> 加载中…
+        <Spinner /> Loading…
       </div>
     );
   }
@@ -180,14 +180,14 @@ export default function Settings() {
   return (
     <div className="animate-fade-in max-w-3xl">
       <PageHeader
-        title="设置"
-        desc="上游凭据与代理行为。"
+        title="Settings"
+        desc="Upstream credentials and proxy behavior."
         actions={
           <div className="flex items-center gap-3">
             {flash && <span className="text-xs text-accent-green">{flash}</span>}
             <button onClick={save} disabled={saving || !dirty} className="btn-primary">
               {saving ? <Spinner /> : <SaveIcon />}
-              保存
+              Save
             </button>
           </div>
         }
@@ -197,27 +197,27 @@ export default function Settings() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <KeyIcon />
-            <h3 className="text-sm font-semibold text-slate-200">上游凭据（轮询）</h3>
+            <h3 className="text-sm font-semibold text-slate-200">Upstream credentials (round-robin)</h3>
             {upstreams.filter((u) => u.enabled && (u.api_key_set || u.api_key.trim())).length > 0 ? (
-              <Badge tone="green">{upstreams.filter((u) => u.enabled && (u.api_key_set || u.api_key.trim())).length} 个可用</Badge>
+              <Badge tone="green">{upstreams.filter((u) => u.enabled && (u.api_key_set || u.api_key.trim())).length} available</Badge>
             ) : (
-              <Badge tone="amber">未配置</Badge>
+              <Badge tone="amber">Not configured</Badge>
             )}
           </div>
           <button onClick={addUpstream} className="btn-ghost !py-1.5 !text-xs">
-            + 添加上游
+            + Add upstream
           </button>
         </div>
 
         <p className="text-xs text-slate-500 mb-4">
-          支持多个上游 API Key 按请求轮询。Base URL 可从下拉选预设（
-          <span className="font-mono text-slate-400">/zen/go</span> go 套餐、
-          <span className="font-mono text-slate-400">/zen/</span> 默认），或选「自定义」填任意 OpenAI 兼容端点。Key 仅本地保存，除转发给上游外不会外发。
+          Multiple upstream API keys rotate per request. Pick a preset Base URL from the dropdown (
+          <span className="font-mono text-slate-400">/zen/go</span> go plan,
+          <span className="font-mono text-slate-400">/zen/</span> default), or choose "Custom" for any OpenAI-compatible endpoint. Keys are stored locally only and never sent anywhere except upstream.
         </p>
 
         {upstreams.length === 0 ? (
           <div className="text-sm text-slate-500 py-4 text-center">
-            还没有上游。点击「+ 添加上游」开始配置。
+            No upstreams yet. Click "+ Add upstream" to get started.
           </div>
         ) : (
           <div className="space-y-3">
@@ -245,7 +245,7 @@ export default function Settings() {
                           <option key={b} value={b}>{b}</option>
                         ))}
                         <option value="__custom__">
-                          {ZEN_BASES.includes(u.base_url) ? "自定义…" : "自定义（编辑下方）"}
+                          {ZEN_BASES.includes(u.base_url) ? "Custom…" : "Custom (edit below)"}
                         </option>
                       </select>
                       {!ZEN_BASES.includes(u.base_url) && (
@@ -258,10 +258,10 @@ export default function Settings() {
                       )}
                     </div>
                     <div>
-                      <label className="label">备注名</label>
+                      <label className="label">Name</label>
                       <input
                         className="input"
-                        placeholder="例如：go 套餐主号"
+                        placeholder="e.g. main go-plan account"
                         value={u.name}
                         onChange={(e) => updateUpstream(i, { name: e.target.value })}
                       />
@@ -270,7 +270,7 @@ export default function Settings() {
                   <button
                     onClick={() => removeUpstream(i)}
                     className="btn-ghost !px-2.5 !py-2 text-slate-500 hover:text-accent-red shrink-0 mt-5"
-                    title="删除"
+                    title="Delete"
                   >
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" strokeLinecap="round" strokeLinejoin="round" />
@@ -279,11 +279,11 @@ export default function Settings() {
                 </div>
                 <div className="mt-2 flex items-center gap-2">
                   <div className="flex-1">
-                    <label className="label">API Key {u.api_key_set ? `（当前：${u.api_key_masked}）` : ""}</label>
+                    <label className="label">API Key {u.api_key_set ? `(current: ${u.api_key_masked})` : ""}</label>
                     <input
                       type="password"
                       className="input font-mono"
-                      placeholder={u.api_key_set ? "留空保持不变，或输入新 Key 替换" : "粘贴你的 Zen API Key"}
+                      placeholder={u.api_key_set ? "Leave empty to keep, or enter a new key" : "Paste your Zen API key"}
                       value={u.api_key}
                       onChange={(e) => updateUpstream(i, { api_key: e.target.value })}
                     />
@@ -296,7 +296,7 @@ export default function Settings() {
                     >
                       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${u.enabled ? "translate-x-5" : ""}`} />
                     </button>
-                    <span className="text-xs text-slate-400">启用</span>
+                    <span className="text-xs text-slate-400">Enabled</span>
                   </label>
                 </div>
               </div>
@@ -308,12 +308,12 @@ export default function Settings() {
       <Card className="mb-4">
         <div className="flex items-center gap-2 mb-4">
           <SlidersIcon />
-          <h3 className="text-sm font-semibold text-slate-200">行为</h3>
+          <h3 className="text-sm font-semibold text-slate-200">Behavior</h3>
         </div>
 
         <Toggle
-          label="Anthropic 智能原生路由"
-          desc="开启后，仅 claude-* / qwen* 目标模型直连上游 /v1/messages；glm、deepseek、kimi 等其它目标模型继续走转换模式。"
+          label="Smart native Anthropic routing"
+          desc="When on, only claude-* / qwen* target models talk to upstream /v1/messages directly; glm, deepseek, kimi and other targets keep using translation mode."
           checked={nativeAnthropic}
           onChange={(v) => {
             setNativeAnthropic(v);
@@ -323,8 +323,8 @@ export default function Settings() {
 
         <div className="mt-4">
           <Toggle
-            label="记录请求"
-            desc="为面板记录每个代理请求及其转换后的响应。"
+            label="Log requests"
+            desc="Record every proxied request and its translated response for the panel."
             checked={logReqs}
             onChange={(v) => {
               setLogReqs(v);
@@ -335,8 +335,8 @@ export default function Settings() {
 
         <div className="mt-4">
           <Toggle
-            label="要求 API 密钥"
-            desc="开启后，/v1/* 代理端点必须携带有效的客户端密钥（见「API 密钥」页）。请先创建密钥再开启。"
+            label="Require API key"
+            desc="When on, /v1/* proxy endpoints require a valid client key (see the API Keys page). Create a key before enabling this."
             checked={requireKey}
             onChange={(v) => {
               setRequireKey(v);
@@ -347,14 +347,14 @@ export default function Settings() {
 
         {nativeAnthropic && (
           <p className="mt-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
-            请确认当前上游 Base URL 对 Claude/Qwen 模型支持 <span className="font-mono">/v1/messages</span>。
-            非 Anthropic 原生目标模型不会走这条直连路径。
+            Make sure the current upstream Base URL supports <span className="font-mono">/v1/messages</span>.
+            Non-native Anthropic targets never use this direct path.
           </p>
         )}
 
         <div className="grid grid-cols-2 gap-4 mt-4">
           <div>
-            <label className="label">日志最大体积（字节）</label>
+            <label className="label">Max logged body size (bytes)</label>
             <input
               type="number"
               className="input font-mono"
@@ -367,7 +367,7 @@ export default function Settings() {
             />
           </div>
           <div>
-            <label className="label">上游超时（秒，0 = 不限时）</label>
+            <label className="label">Upstream timeout (seconds, 0 = no limit)</label>
             <input
               type="number"
               className="input font-mono"
@@ -383,7 +383,7 @@ export default function Settings() {
 
         <div className="grid grid-cols-2 gap-4 mt-4">
           <div>
-            <label className="label">Web Search 模式</label>
+            <label className="label">Web search mode</label>
             <select
               className="input"
               value={webSearchMode}
@@ -397,14 +397,14 @@ export default function Settings() {
               <option value="translate">Translate</option>
             </select>
             <p className="text-xs text-slate-500 mt-2">
-              Native 可使用独立 Anthropic 上游；Translate 使用代理搜索并整理结果。
+              Native can use a dedicated Anthropic upstream; Translate searches via the proxy and compiles results.
             </p>
           </div>
           <div>
-            <label className="label">Web Search 模型（留空 = 沿用主模型）</label>
+            <label className="label">Web search model (empty = follow main model)</label>
             <input
               className="input font-mono"
-              placeholder="例如：deepseek-v4-flash / glm-5-air"
+              placeholder="e.g. deepseek-v4-flash / glm-5-air"
               value={webSearchModel}
               onChange={(e) => {
                 setWebSearchModel(e.target.value);
@@ -412,14 +412,14 @@ export default function Settings() {
               }}
             />
             <p className="text-xs text-slate-500 mt-2">
-              Native 和 Translate 都会使用；留空时沿用主模型。
+              Used by both Native and Translate; empty follows the main model.
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4 mt-4">
           <div>
-            <label className="label">Web Search 原生上游</label>
+            <label className="label">Web search native upstream</label>
             <input
               className="input font-mono"
               placeholder="https://api.deepseek.com/anthropic"
@@ -430,19 +430,19 @@ export default function Settings() {
               }}
             />
             <p className="text-xs text-slate-500 mt-2">
-              仅 Native 模式使用；留空时复用主上游。
+              Native mode only; empty reuses the main upstream.
             </p>
           </div>
           <div>
             <label className="label">
               Web Search API Key
               {cfg?.web_search_api_key_set ? (
-                <span className="ml-2 text-xs text-slate-500">已设置 {cfg.web_search_api_key_masked}</span>
+                <span className="ml-2 text-xs text-slate-500">Set {cfg.web_search_api_key_masked}</span>
               ) : null}
             </label>
             <input
               className="input font-mono"
-              placeholder={cfg?.web_search_api_key_set ? "留空 = 保持当前 key" : "DeepSeek API key"}
+              placeholder={cfg?.web_search_api_key_set ? "Empty = keep current key" : "DeepSeek API key"}
               type="password"
               value={webSearchAPIKey}
               onChange={(e) => {
@@ -451,7 +451,7 @@ export default function Settings() {
               }}
             />
             <p className="text-xs text-slate-500 mt-2">
-              留空不会覆盖已保存的搜索专用 key。
+              Leaving it empty will not overwrite the saved search key.
             </p>
           </div>
         </div>
@@ -460,13 +460,13 @@ export default function Settings() {
       <Card className="mb-4">
         <div className="flex items-center gap-2 mb-4">
           <CacheIcon />
-          <h3 className="text-sm font-semibold text-slate-200">Prompt Cache 优化</h3>
-          {promptCache ? <Badge tone="green">已开启</Badge> : <Badge tone="amber">已关闭</Badge>}
+          <h3 className="text-sm font-semibold text-slate-200">Prompt cache tuning</h3>
+          {promptCache ? <Badge tone="green">Enabled</Badge> : <Badge tone="amber">Disabled</Badge>}
         </div>
 
         <Toggle
-          label="启用缓存友好化"
-          desc="自动添加 prompt_cache_key，并稳定工具、system/developer 前缀和相邻文件上下文顺序。"
+          label="Enable cache friendliness"
+          desc="Auto-add prompt_cache_key and stabilize tool, system/developer prefix, and adjacent file-context ordering."
           checked={promptCache}
           onChange={(v) => {
             setPromptCache(v);
@@ -475,7 +475,7 @@ export default function Settings() {
         />
 
         <div className="mt-4">
-          <label className="label">prompt_cache_key 前缀</label>
+          <label className="label">prompt_cache_key prefix</label>
           <input
             className="input font-mono"
             value={promptCacheKeyPrefix}
@@ -485,14 +485,14 @@ export default function Settings() {
             }}
           />
           <p className="text-xs text-slate-500 mt-2">
-            代理会基于模型、工具集和稳定 system 前缀生成 key；这里的前缀用于区分不同代理实例。
+            The proxy derives keys from model, tool set, and stable system prefix; this prefix distinguishes proxy instances.
           </p>
         </div>
 
         <div className="mt-4">
           <Toggle
-            label="Anthropic 自动 cache_control"
-            desc="原生 Anthropic 上游请求中，如果有稳定 system/tool 前缀但没有 cache_control，则自动添加 ephemeral 缓存断点。"
+            label="Automatic Anthropic cache_control"
+            desc="For native Anthropic upstream requests with a stable system/tool prefix but no cache_control, auto-add an ephemeral cache breakpoint."
             checked={promptCacheAnthropicControl}
             onChange={(v) => {
               setPromptCacheAnthropicControl(v);
@@ -503,8 +503,8 @@ export default function Settings() {
 
         <div className="mt-4">
           <Toggle
-            label="归一化缓存前缀"
-            desc="移除 request_id/timestamp 等非 prompt 噪声字段，并固定工具、system/developer、文件上下文顺序。"
+            label="Normalize cache prefix"
+            desc="Strip non-prompt noise fields like request_id/timestamp and pin tool, system/developer, and file-context ordering."
             checked={promptCacheNormalize}
             onChange={(v) => {
               setPromptCacheNormalize(v);
@@ -517,28 +517,28 @@ export default function Settings() {
       <Card className="mb-4">
         <div className="flex items-center gap-2 mb-4">
           <LockIcon />
-          <h3 className="text-sm font-semibold text-slate-200">面板访问密码</h3>
-          {cfg.panel_token_set ? <Badge tone="green">已设置</Badge> : <Badge tone="amber">未设置（开放访问）</Badge>}
+          <h3 className="text-sm font-semibold text-slate-200">Panel access password</h3>
+          {cfg.panel_token_set ? <Badge tone="green">Set</Badge> : <Badge tone="amber">Not set (open access)</Badge>}
         </div>
         <p className="text-xs text-slate-500 mb-4">
-          设置密码后，访问控制面板需先通过登录页验证。留空并保存可清除密码、恢复开放访问。
+          Once set, the control panel requires login-page authentication. Save an empty password to clear it and restore open access.
         </p>
 
-        <label className="label">新密码</label>
+        <label className="label">New password</label>
         <input
           type="password"
           className="input mb-3"
-          placeholder="输入新密码，留空则清除"
+          placeholder="Enter a new password, empty clears"
           value={newPanelToken}
           autoComplete="new-password"
           onChange={(e) => setNewPanelToken(e.target.value)}
         />
 
-        <label className="label">确认新密码</label>
+        <label className="label">Confirm new password</label>
         <input
           type="password"
           className="input mb-3"
-          placeholder="再次输入新密码"
+          placeholder="Enter the new password again"
           value={confirmPanelToken}
           autoComplete="new-password"
           onChange={(e) => setConfirmPanelToken(e.target.value)}
@@ -555,7 +555,7 @@ export default function Settings() {
             className="btn-primary"
           >
             {saving ? <Spinner /> : <SaveIcon />}
-            {newPanelToken === "" ? "清除密码" : "设置密码"}
+            {newPanelToken === "" ? "Clear password" : "Set password"}
           </button>
           {panelTokenFlash && (
             <span className="text-xs text-accent-green">{panelTokenFlash}</span>
@@ -566,10 +566,10 @@ export default function Settings() {
       <Card>
         <div className="flex items-center gap-2 mb-4">
           <TerminalIcon />
-          <h3 className="text-sm font-semibold text-slate-200">接入 Claude Code</h3>
+          <h3 className="text-sm font-semibold text-slate-200">Connect Claude Code</h3>
         </div>
         <p className="text-sm text-slate-400 mb-3">
-          通过两个环境变量把 Claude Code 指向本代理：
+          Point Claude Code at this proxy with two environment variables:
         </p>
         <pre className="rounded-xl bg-ink-950/80 border border-white/[0.05] p-4 text-xs font-mono text-slate-300 overflow-x-auto">
 {`# Bash / zsh
@@ -584,8 +584,8 @@ claude`}
         </pre>
         <p className="text-xs text-slate-500 mt-3">
           {requireKey
-            ? "已启用客户端鉴权，请使用「API 密钥」页创建的密钥作为 AUTH_TOKEN。"
-            : "未启用客户端鉴权时，AUTH_TOKEN 的值无关紧要；代理仍使用你的 Zen Key 向上游鉴权。"}
+            ? "Client auth is enabled — use a key from the API Keys page as AUTH_TOKEN."
+            : "With client auth off, the AUTH_TOKEN value does not matter; the proxy still authenticates upstream with your Zen key."}
         </p>
       </Card>
     </div>

@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -44,6 +45,16 @@ func (s *Server) proxyResponsesPassthrough(
 			"could not prepare upstream Responses request: "+err.Error())
 		return
 	}
+	upstreamStream := in.Stream
+	if proxy.IsFreeModel(targetModel) {
+		upBody, err = proxy.PrepareFreeResponsesBody(upBody)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+				"could not prepare Zen free-tier Responses request: "+err.Error())
+			return
+		}
+		upstreamStream = true
+	}
 	// Client-supplied effort names are normalized into the target model's
 	// known scale (unknown -> model maximum); requests without an effort
 	// pass through untouched.
@@ -71,14 +82,14 @@ func (s *Server) proxyResponsesPassthrough(
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("User-Agent", ocUA())
 	setZenSessionHeaders(upReq, r.Header, in.PromptCacheKey)
-	if in.Stream {
+	if upstreamStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {
 		upReq.Header.Set("Accept", "application/json")
 	}
 
 	upStart := time.Now()
-	httpClient := s.upstreamClient(in.Stream, cfg.RequestTimeoutSeconds)
+	httpClient := s.upstreamClient(upstreamStream, cfg.RequestTimeoutSeconds)
 	resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 	if err != nil {
 		logUpstreamError(r, incomingModel, targetModel, in.Stream, time.Since(upStart), err)
@@ -97,9 +108,13 @@ func (s *Server) proxyResponsesPassthrough(
 	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	if in.Stream && resp.StatusCode < http.StatusBadRequest &&
+	if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
 		(contentType == "" || strings.Contains(contentType, "text/event-stream")) {
-		s.relayResponsesPassthroughStream(w, resp, r, incomingModel, targetModel, reqBody, start)
+		if in.Stream {
+			s.relayResponsesPassthroughStream(w, resp, r, incomingModel, targetModel, reqBody, start)
+		} else {
+			s.relayResponsesPassthroughAggregated(w, resp, r, incomingModel, targetModel, reqBody, start)
+		}
 		return
 	}
 	s.relayResponsesPassthroughJSON(w, resp, r, incomingModel, targetModel, in.Stream, reqBody, start)
@@ -189,6 +204,74 @@ func dedupeResponsesInputItems(items []map[string]json.RawMessage) []map[string]
 func mustJSONMap(m map[string]json.RawMessage) []byte {
 	b, _ := json.Marshal(m)
 	return b
+}
+
+// relayResponsesPassthroughAggregated converts the forced streaming free-tier
+// response back into one Responses JSON object for a non-streaming client.
+func (s *Server) relayResponsesPassthroughAggregated(
+	w http.ResponseWriter,
+	resp *http.Response,
+	r *http.Request,
+	incomingModel, targetModel string,
+	reqBody []byte,
+	start time.Time,
+) {
+	defer resp.Body.Close()
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not decompress upstream stream: "+err.Error())
+			s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not read upstream stream: "+err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	if len(raw) > maxResponseBytes {
+		const msg = "upstream response exceeded the maximum allowed size"
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", msg)
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, msg, reqBody, time.Since(start))
+		return
+	}
+	final, err := proxy.AggregateResponsesSSE(raw)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	var out proxy.ResponsesResponse
+	if err := json.Unmarshal(final, &out); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not parse aggregated Responses response: "+err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	filterUndeclaredResponsesTools(&out, reqBody)
+	filtered, err := json.Marshal(out)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not encode aggregated Responses response: "+err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	copyOpenAIHeaders(w.Header(), resp.Header, false)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(filtered)
+
+	input, output, cached := 0, 0, 0
+	if out.Usage != nil {
+		input = out.Usage.InputTokens
+		output = out.Usage.OutputTokens
+		cached = out.Usage.InputTokensDetails.CachedTokens
+	}
+	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
+		input, output, cached, 0, "", string(reqBody), string(filtered), time.Since(start))
 }
 
 // relayResponsesPassthroughJSON relays a non-stream upstream /v1/responses

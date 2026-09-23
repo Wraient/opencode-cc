@@ -72,58 +72,58 @@ export default function Dashboard() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="仪表盘"
-        desc="代理实时流量、Token 用量与上游延迟。"
+        title="Dashboard"
+        desc="Live proxy traffic, token usage, and upstream latency."
         actions={
           <button onClick={refresh} className="btn-ghost">
-            <RefreshIcon /> 刷新
+            <RefreshIcon /> Refresh
           </button>
         }
       />
 
       {err && (
         <div className="mb-5 rounded-xl border border-accent-red/20 bg-accent-red/10 px-4 py-3 text-sm text-accent-red">
-          无法访问面板接口：{err}
+          Cannot reach the panel API: {err}
         </div>
       )}
 
       {/* Stat row */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <StatCard
-          label="请求数 · 24小时"
+          label="Requests · 24h"
           value={fmtNum(summary?.requests_last_24h ?? 0)}
-          sub={`累计 ${fmtNum(summary?.total_requests ?? 0)} 次`}
+          sub={`${fmtNum(summary?.total_requests ?? 0)} total`}
           accent="text-white"
         />
         <StatCard
-          label="错误率 · 24小时"
+          label="Error rate · 24h"
           value={`${errorRate.toFixed(1)}%`}
-          sub={`${fmtNum(summary?.errors_last_24h ?? 0)} 次错误`}
+          sub={`${fmtNum(summary?.errors_last_24h ?? 0)} errors`}
           accent={errorRate > 5 ? "text-accent-red" : "text-accent-green"}
         />
         <StatCard
-          label="Token · 24小时"
+          label="Tokens · 24h"
           value={fmtNum(
             (summary?.total_input_tokens ?? 0) + (summary?.total_output_tokens ?? 0)
           )}
-          sub={`输入 ${fmtNum(summary?.total_input_tokens ?? 0)} · 输出 ${fmtNum(
+          sub={`In ${fmtNum(summary?.total_input_tokens ?? 0)} · Out ${fmtNum(
             summary?.total_output_tokens ?? 0
           )}`}
           accent="text-accent-cyan"
         />
         <StatCard
-          label="缓存命中"
+          label="Cache hits"
           value={`${cacheHitRate.toFixed(1)}%`}
-          sub={`命中 ${fmtNum(cachedInputTokens)} · 写入 ${fmtNum(cacheCreationTokens)}`}
+          sub={`${fmtNum(cachedInputTokens)} hits · ${fmtNum(cacheCreationTokens)} written`}
           accent={cacheHitRate > 0 ? "text-accent-green" : "text-slate-400"}
         />
         <StatCard
-          label="延迟 p95"
+          label="Latency p95"
           value={latency ? fmtMs(latency.p95) : "—"}
           sub={
             latency
               ? `p50 ${fmtMs(latency.p50)} · p99 ${fmtMs(latency.p99)}`
-              : "暂无数据"
+              : "No data"
           }
           accent="text-accent-glow"
         />
@@ -133,30 +133,30 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-slate-200">每小时请求数</h3>
+            <h3 className="text-sm font-semibold text-slate-200">Hourly requests</h3>
             <div className="flex gap-2">
-              <Badge tone="violet">请求</Badge>
-              <Badge tone="red">错误</Badge>
+              <Badge tone="violet">Requests</Badge>
+              <Badge tone="red">Errors</Badge>
             </div>
           </div>
           {hourly.length > 0 ? (
             <RequestsAreaChart data={hourly} />
           ) : (
-            <EmptyState title="暂无流量" hint="通过代理发送一个请求即可填充图表。" />
+            <EmptyState title="No traffic yet" hint="Send a request through the proxy to fill this chart." />
           )}
         </Card>
         <Card>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-slate-200">每小时 Token</h3>
+            <h3 className="text-sm font-semibold text-slate-200">Hourly tokens</h3>
             <div className="flex gap-2">
-              <Badge tone="cyan">输入</Badge>
-              <Badge tone="green">输出</Badge>
+              <Badge tone="cyan">Input</Badge>
+              <Badge tone="green">Output</Badge>
             </div>
           </div>
           {hourly.length > 0 ? (
             <TokensAreaChart data={hourly} />
           ) : (
-            <EmptyState title="暂无 Token" hint="请求完成后将显示 Token 用量。" />
+            <EmptyState title="No tokens yet" hint="Token usage shows here once requests complete." />
           )}
         </Card>
       </div>
@@ -164,11 +164,11 @@ export default function Dashboard() {
       {/* Model breakdown */}
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-slate-200">模型用量 · 24小时</h3>
-          <Badge>{models.length} 个模型</Badge>
+          <h3 className="text-sm font-semibold text-slate-200">Model usage · 24h</h3>
+          <Badge>{models.length} models</Badge>
         </div>
         {models.length === 0 ? (
-          <EmptyState title="暂无模型用量" hint="每个解析后的目标模型都会在这里统计。" />
+          <EmptyState title="No model usage yet" hint="Every resolved target model is counted here." />
         ) : (
           <div className="space-y-3">
             {models.map((m) => (
@@ -183,13 +183,13 @@ export default function Dashboard() {
                   />
                 </div>
                 <div className="w-24 text-right text-sm text-slate-400 tabular-nums">
-                  {fmtNum(m.requests)} 次
+                  {fmtNum(m.requests)} reqs
                 </div>
                 <div className="w-24 text-right text-sm text-slate-500 tabular-nums">
                   {fmtNum(m.tokens)} tok
                 </div>
                 <div className="w-24 text-right text-xs text-accent-green/80 tabular-nums">
-                  {m.cached_input_tokens ? `${fmtNum(m.cached_input_tokens)} 缓存` : "—"}
+                  {m.cached_input_tokens ? `${fmtNum(m.cached_input_tokens)} cached` : "—"}
                 </div>
               </div>
             ))}

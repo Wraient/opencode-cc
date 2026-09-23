@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -27,56 +28,69 @@ import (
 // This proxy must be indistinguishable from stock opencode upstream: it never
 // sends any opencode-cc fingerprint in these headers.
 const (
-	zenHeaderProject = "x-opencode-project"
-	zenHeaderSession = "x-opencode-session"
-	zenHeaderRequest = "x-opencode-request"
-	zenHeaderClient  = "x-opencode-client"
+	zenHeaderProject   = "x-opencode-project"
+	zenHeaderSession   = "x-opencode-session"
+	zenHeaderRequest   = "x-opencode-request"
+	zenHeaderClient    = "x-opencode-client"
+	zenHeaderAffinity  = "x-session-affinity"
+	zenHeaderSessionID = "x-session-id"
 
 	// zenClientID is the exact stock-terminal value (Flag.OPENCODE_CLIENT
 	// defaults to "cli"), used when the downstream client sent none.
 	zenClientID = "cli"
 )
 
+var canonicalSessionPattern = regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
+
 // setZenSessionHeaders sets the x-opencode-* identity headers on an upstream
-// Zen request.
-//
-// Precedence per header: forward the downstream client's value when present
-// (a real opencode harness already sends its true ses_/msg_ ids through us)
-// and only then synthesize in the identical format:
-//   - session: ses_ + hash of the route's sticky key (stable per client
-//     session across turns AND proxy restarts, so provider pins survive).
-//     When no sticky key exists, a single process-stable fallback id is
-//     used (never omitted): since 2026-09 Zen hard-rejects free-tier
-//     requests without x-opencode-session (MissingSessionID), and one
-//     stable id keeps provider pinning coherent for single-user proxies.
-//     This matches the bridge behavior in anthropic_responses.go.
-//   - request: msg_ + 26 random alphanumerics, one per upstream call.
-//   - project: never fabricated, omitted when unknown.
-//   - client: stock "cli" when the client sent none.
+// Zen request. Downstream session IDs are accepted when they already have the
+// current OpenCode shape; UUIDs and older ses_ formats are deterministically
+// normalized so Claude Code, Grok Build, and OpenCode all reach the same
+// sticky-routing lane.
 func setZenSessionHeaders(upReq *http.Request, down http.Header, stickyKey string) {
 	if upReq == nil {
 		return
 	}
-	if v := strings.TrimSpace(down.Get(zenHeaderSession)); v != "" {
-		upReq.Header.Set(zenHeaderSession, v)
-	} else if v := synthSessionID(stickyKey); v != "" {
-		upReq.Header.Set(zenHeaderSession, v)
-	} else {
-		upReq.Header.Set(zenHeaderSession, fallbackSessionID())
+
+	session := strings.TrimSpace(down.Get(zenHeaderSession))
+	if session == "" {
+		session = strings.TrimSpace(down.Get(zenHeaderAffinity))
 	}
-	if v := strings.TrimSpace(down.Get(zenHeaderRequest)); v != "" {
-		upReq.Header.Set(zenHeaderRequest, v)
-	} else {
-		upReq.Header.Set(zenHeaderRequest, synthRequestID())
+	if session == "" {
+		session = strings.TrimSpace(down.Get(zenHeaderSessionID))
 	}
-	if v := strings.TrimSpace(down.Get(zenHeaderProject)); v != "" {
-		upReq.Header.Set(zenHeaderProject, v)
+	if session == "" {
+		session = strings.TrimSpace(down.Get("x-claude-code-session-id"))
 	}
-	if v := strings.TrimSpace(down.Get(zenHeaderClient)); v != "" {
-		upReq.Header.Set(zenHeaderClient, v)
-	} else {
-		upReq.Header.Set(zenHeaderClient, zenClientID)
+	if !canonicalSessionPattern.MatchString(session) {
+		session = synthSessionID(session + "|" + strings.TrimSpace(stickyKey))
 	}
+	if session == "" {
+		session = fallbackSessionID()
+	}
+	upReq.Header.Set(zenHeaderSession, session)
+	// The current OpenCode request path also sends these two affinity forms;
+	// keeping them equal avoids a second identity path in Zen's router.
+	upReq.Header.Set(zenHeaderAffinity, session)
+	upReq.Header.Set(zenHeaderSessionID, session)
+
+	request := strings.TrimSpace(down.Get(zenHeaderRequest))
+	if request == "" || !strings.HasPrefix(request, "msg_") || len(request) != 30 {
+		request = synthRequestID()
+	}
+	upReq.Header.Set(zenHeaderRequest, request)
+
+	project := strings.TrimSpace(down.Get(zenHeaderProject))
+	if project == "" {
+		project = "global"
+	}
+	upReq.Header.Set(zenHeaderProject, project)
+
+	client := strings.TrimSpace(down.Get(zenHeaderClient))
+	if client == "" {
+		client = zenClientID
+	}
+	upReq.Header.Set(zenHeaderClient, client)
 }
 
 // synthSessionID derives a stock-formatted session id (ses_ + 26 hex chars)
@@ -92,8 +106,8 @@ func synthSessionID(stickyKey string) string {
 const synthIDAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 // fallbackSessionID is the process-stable session id used when neither the
-// downstream client nor the sticky key yields one. Stable (not per-request)
-// so provider pinning stays coherent. Same alphabet as the bridge fallback.
+// downstream client nor the sticky key yields one. It follows Zen's current
+// canonical shape: ses_ + 12 lowercase hex + 14 base62 characters.
 var (
 	fallbackSessionOnce sync.Once
 	fallbackSessionVal  string
@@ -101,15 +115,16 @@ var (
 
 func fallbackSessionID() string {
 	fallbackSessionOnce.Do(func() {
-		var b [26]byte
+		var b [20]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			fallbackSessionVal = "ses_00000000000000000000000000"
 			return
 		}
-		for i, v := range b {
-			b[i] = synthIDAlphabet[int(v)%len(synthIDAlphabet)]
+		var tail [14]byte
+		for i := range tail {
+			tail[i] = synthIDAlphabet[int(b[6+i])%len(synthIDAlphabet)]
 		}
-		fallbackSessionVal = "ses_" + string(b[:])
+		fallbackSessionVal = "ses_" + hex.EncodeToString(b[:6]) + string(tail[:])
 	})
 	return fallbackSessionVal
 }

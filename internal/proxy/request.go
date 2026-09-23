@@ -143,9 +143,40 @@ func buildSystemMessages(sys AnthropicSystem) []OpenAIMessage {
 // multiple OpenAI messages (e.g. tool_result blocks become separate
 // role:"tool" messages followed by the remaining content as the user message).
 func convertMessage(m AnthropicMessage) []OpenAIMessage {
-	// Simple string content short-circuit.
+	// Simple string content short-circuit. User string content still runs
+	// through the video split so a plain ".mp4?" turn attaches natively.
 	if m.Content.IsStr {
-		return []OpenAIMessage{{Role: m.Role, Content: m.Content.Text}}
+		if m.Role != "user" || strings.TrimSpace(m.Content.Text) == "" ||
+			!maybeHasVideoRef(m.Content.Text) {
+			return []OpenAIMessage{{Role: m.Role, Content: m.Content.Text}}
+		}
+		userSpans, err := splitVideoMarkers(m.Content.Text)
+		if err != nil {
+			return []OpenAIMessage{{Role: "user",
+				Content: "[video error: " + err.Error() + "]"}}
+		}
+		um := OpenAIMessage{Role: m.Role}
+		var parts []OpenAIContentPart
+		for _, s := range userSpans {
+			switch {
+			case s.isVideo:
+				parts = append(parts, OpenAIContentPart{
+					Type:     "video_url",
+					VideoURL: &OpenAIVideoURL{URL: s.videoURL},
+				})
+			case strings.TrimSpace(s.text) != "":
+				parts = append(parts, OpenAIContentPart{Type: "text", Text: s.text})
+			}
+		}
+		if len(parts) == 0 {
+			return []OpenAIMessage{{Role: m.Role, Content: m.Content.Text}}
+		}
+		if len(parts) == 1 && parts[0].Type == "text" {
+			um.Content = parts[0].Text
+		} else {
+			um.Content = parts
+		}
+		return []OpenAIMessage{um}
 	}
 
 	var out []OpenAIMessage
@@ -246,10 +277,48 @@ func convertUserBlocks(m AnthropicMessage) []OpenAIMessage {
 				Content:    toolResultText(b),
 			})
 		case "text":
-			parts = append(parts, OpenAIContentPart{Type: "text", Text: b.Text})
+			userSpans, err := splitVideoMarkers(b.Text)
+			if err != nil {
+				return append(out, OpenAIMessage{
+					Role:    "user",
+					Content: "[video error: " + err.Error() + "]",
+				})
+			}
+			for _, s := range userSpans {
+				switch {
+				case s.isVideo:
+					parts = append(parts, OpenAIContentPart{
+						Type:     "video_url",
+						VideoURL: &OpenAIVideoURL{URL: s.videoURL},
+					})
+				case strings.TrimSpace(s.text) != "":
+					parts = append(parts, OpenAIContentPart{Type: "text", Text: s.text})
+				}
+			}
 		case "image":
 			if part := imageBlockToPart(b); part != nil {
 				parts = append(parts, *part)
+			}
+		case "video", "document":
+			// Explicit video block, or a document block carrying video.
+			if !isVideoSource(b.Source) {
+				if strings.TrimSpace(b.Text) != "" {
+					parts = append(parts, OpenAIContentPart{Type: "text", Text: b.Text})
+				}
+				continue
+			}
+			url, verr := anthropicVideoURL(b.Source)
+			if verr != nil {
+				return append(out, OpenAIMessage{
+					Role:    "user",
+					Content: "[video error: " + verr.Error() + "]",
+				})
+			}
+			if url != "" {
+				parts = append(parts, OpenAIContentPart{
+					Type:     "video_url",
+					VideoURL: &OpenAIVideoURL{URL: url},
+				})
 			}
 		default:
 			parts = append(parts, OpenAIContentPart{Type: "text", Text: b.Text})

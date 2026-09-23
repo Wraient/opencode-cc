@@ -19,11 +19,11 @@ function Logo() {
 }
 
 const NAV = [
-  { to: "/", label: "仪表盘", icon: DashIcon, end: true },
-  { to: "/logs", label: "请求日志", icon: ListIcon },
-  { to: "/keys", label: "API 密钥", icon: KeyNavIcon },
-  { to: "/models", label: "模型路由", icon: CubeIcon },
-  { to: "/settings", label: "设置", icon: GearIcon },
+  { to: "/", label: "Dashboard", icon: DashIcon, end: true },
+  { to: "/logs", label: "Request Logs", icon: ListIcon },
+  { to: "/keys", label: "API Keys", icon: KeyNavIcon },
+  { to: "/models", label: "Model Routes", icon: CubeIcon },
+  { to: "/settings", label: "Settings", icon: GearIcon },
 ];
 
 function NavItem({
@@ -85,7 +85,7 @@ function StatusBar() {
       ? "bg-accent-green"
       : "bg-accent-red";
   const text =
-    online === null ? "连接中…" : online ? "代理在线" : "代理离线";
+    online === null ? "Connecting…" : online ? "Proxy online" : "Proxy offline";
 
   return (
     <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -148,7 +148,7 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
       await api.login(password);
       onLogin();
     } catch {
-      setError("密码错误，请重试");
+      setError("Wrong password, please try again");
     } finally {
       setLoading(false);
     }
@@ -161,11 +161,11 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
           <Logo />
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-ink-950/60 backdrop-blur-xl shadow-card p-8">
-          <h2 className="text-lg font-semibold text-white mb-1 text-center">管理员登录</h2>
-          <p className="text-sm text-slate-500 text-center mb-6">请输入面板密码以继续</p>
+          <h2 className="text-lg font-semibold text-white mb-1 text-center">Admin login</h2>
+          <p className="text-sm text-slate-500 text-center mb-6">Enter the panel password to continue</p>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-slate-400 font-medium">面板密码</label>
+              <label className="text-xs text-slate-400 font-medium">Panel password</label>
               <input
                 type="password"
                 autoFocus
@@ -184,12 +184,12 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
               disabled={loading || !password}
               className="mt-1 w-full rounded-xl bg-accent hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2.5 text-sm font-medium text-white transition-colors"
             >
-              {loading ? "验证中…" : "登录"}
+              {loading ? "Verifying…" : "Log in"}
             </button>
           </form>
         </div>
         <p className="text-center text-xs text-slate-600 mt-4">
-          在 Settings 页面可修改或清除面板密码
+          You can change or clear the panel password on the Settings page
         </p>
       </div>
     </div>
@@ -213,14 +213,14 @@ function LogoutButton() {
       onClick={handleLogout}
       disabled={pending}
       className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-50"
-      title="退出登录"
+      title="Log out"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
         <polyline points="16 17 21 12 16 7" />
         <line x1="21" y1="12" x2="9" y2="12" />
       </svg>
-      退出登录
+      Log out
     </button>
   );
 }

@@ -97,6 +97,15 @@ func (s *Server) Proxy() http.HandlerFunc {
 			writeAnthropicError(w, http.StatusInternalServerError, "api_error", "could not encode upstream request: "+err.Error())
 			return
 		}
+		upstreamStream := areq.Stream
+		if proxy.IsFreeModel(targetModel) {
+			upBody, err = proxy.PrepareFreeChatBody(upBody)
+			if err != nil {
+				writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "could not prepare Zen free-tier request: "+err.Error())
+				return
+			}
+			upstreamStream = true
+		}
 
 		upURL := strings.TrimRight(upstream, "/") + "/v1/chat/completions"
 		upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upURL, bytes.NewReader(upBody))
@@ -110,7 +119,7 @@ func (s *Server) Proxy() http.HandlerFunc {
 		// compatible servers) gate SSE delivery on Accept: text/event-stream.
 		// Sending application/json on a stream:true request makes some upstreams
 		// refuse with "streaming not supported".
-		if areq.Stream {
+		if upstreamStream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
 			upReq.Header.Set("Accept", "application/json")
@@ -124,7 +133,7 @@ func (s *Server) Proxy() http.HandlerFunc {
 			upReq.Header.Set("anthropic-version", v)
 		}
 
-		httpClient := s.upstreamClient(areq.Stream, timeoutSeconds)
+		httpClient := s.upstreamClient(upstreamStream, timeoutSeconds)
 
 		resp, err := httpClient.Do(upReq)
 		if err != nil {
@@ -141,6 +150,9 @@ func (s *Server) Proxy() http.HandlerFunc {
 
 		if areq.Stream {
 			s.handleStreamResponse(w, resp, r, areq.Model, targetModel, body, start)
+		} else if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
+			(strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") || resp.Header.Get("Content-Type") == "") {
+			s.handleAggregatedChatResponse(w, resp, r, areq.Model, targetModel, body, start)
 		} else {
 			s.handleNonStreamResponse(w, resp, r, areq.Model, targetModel, body, start)
 		}
@@ -437,6 +449,36 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, resp *http.Respo
 		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 		stopReasonStr(aresp.StopReason),
 		string(reqBody), mustJSON(aresp), time.Since(start))
+}
+
+// handleAggregatedChatResponse converts a forced upstream Chat SSE response to
+// the ordinary non-streaming Anthropic Messages response shape.
+func (s *Server) handleAggregatedChatResponse(w http.ResponseWriter, resp *http.Response, r *http.Request, inModel, target string, reqBody []byte, start time.Time) {
+	defer resp.Body.Close()
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadGateway, "api_error", "could not decompress upstream stream: "+err.Error())
+			s.logFailed(r.Context(), r, inModel, target, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	chat, err := proxy.AggregateOpenAIStream(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, inModel, target, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	aresp := proxy.ConvertResponse(chat, inModel)
+	filterUndeclaredToolUses(aresp, areqToolsFromBody(reqBody))
+	writeJSON(w, http.StatusOK, aresp)
+	s.logSuccessWithCache(r.Context(), r, inModel, target, false, http.StatusOK,
+		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
+		stopReasonStr(aresp.StopReason), string(reqBody), mustJSON(aresp), time.Since(start))
 }
 
 // handleStreamResponse proxies the SSE stream, converting each OpenAI chunk to

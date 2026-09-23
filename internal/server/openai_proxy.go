@@ -32,7 +32,8 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 			return
 		}
 
-		upBody, incomingModel, targetModel, stream, err := s.prepareOpenAIRequest(body)
+		clientStream := openAIStreamRequested(body)
+		upBody, incomingModel, targetModel, upstreamStream, err := s.prepareOpenAIRequest(body)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -52,7 +53,7 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		if !ok {
 			const msg = "no upstream API key configured. Set one in the web panel (Settings → upstreams)."
 			writeOpenAIError(w, http.StatusUnauthorized, "authentication_error", msg)
-			s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
+			s.logFailed(r.Context(), r, incomingModel, targetModel, clientStream,
 				http.StatusUnauthorized, "no upstream api key", body, time.Since(start))
 			return
 		}
@@ -68,28 +69,32 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", ocUA())
 		setZenSessionHeaders(upReq, r.Header, cacheKey)
-		if stream {
+		if upstreamStream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
 			upReq.Header.Set("Accept", "application/json")
 		}
 
-		httpClient := s.upstreamClient(stream, cfg.RequestTimeoutSeconds)
+		httpClient := s.upstreamClient(upstreamStream, cfg.RequestTimeoutSeconds)
 		resp, err := httpClient.Do(upReq)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
-			s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
+			s.logFailed(r.Context(), r, incomingModel, targetModel, clientStream,
 				http.StatusBadGateway, err.Error(), body, time.Since(start))
 			return
 		}
 
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-		if stream && resp.StatusCode < http.StatusBadRequest &&
+		if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
 			(contentType == "" || strings.Contains(contentType, "text/event-stream")) {
-			s.relayOpenAIStream(w, resp, r, incomingModel, targetModel, body, start)
+			if clientStream {
+				s.relayOpenAIStream(w, resp, r, incomingModel, targetModel, body, start)
+			} else {
+				s.relayOpenAIAggregated(w, resp, r, incomingModel, targetModel, body, start)
+			}
 			return
 		}
-		s.relayOpenAIJSON(w, resp, r, incomingModel, targetModel, stream, body, start)
+		s.relayOpenAIJSON(w, resp, r, incomingModel, targetModel, clientStream, body, start)
 	}
 }
 
@@ -132,7 +137,97 @@ func (s *Server) prepareOpenAIRequest(body []byte) ([]byte, string, string, bool
 	if err != nil {
 		return nil, "", "", false, fmt.Errorf("could not encode upstream request: %w", err)
 	}
+	if proxy.IsFreeModel(targetModel) {
+		upBody, err = proxy.PrepareFreeChatBody(upBody)
+		if err != nil {
+			return nil, "", "", false, fmt.Errorf("could not prepare Zen free-tier request: %w", err)
+		}
+		// Zen's free lane only accepts the official streaming/tool shape. The
+		// handler still uses the original body to decide how to answer a
+		// non-streaming client; this returned flag describes the upstream hop.
+		stream = true
+	}
 	return upBody, incomingModel, targetModel, stream, nil
+}
+
+func openAIStreamRequested(body []byte) bool {
+	var payload struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	return payload.Stream
+}
+
+func filterUndeclaredOpenAITools(out *proxy.OpenAIResponse, reqBody []byte) {
+	if out == nil {
+		return
+	}
+	var request struct {
+		Tools []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(reqBody, &request) != nil {
+		return
+	}
+	declared := make(map[string]struct{}, len(request.Tools))
+	for _, tool := range request.Tools {
+		if tool.Function.Name != "" {
+			declared[tool.Function.Name] = struct{}{}
+		}
+	}
+	if len(out.Choices) == 0 || out.Choices[0].Message == nil {
+		return
+	}
+	calls := out.Choices[0].Message.ToolCalls[:0]
+	for _, call := range out.Choices[0].Message.ToolCalls {
+		if _, ok := declared[call.Function.Name]; ok {
+			calls = append(calls, call)
+		}
+	}
+	out.Choices[0].Message.ToolCalls = calls
+}
+
+// relayOpenAIAggregated adapts a forced upstream SSE response to the
+// non-streaming wire format requested by ordinary OpenAI SDKs. It is used
+// only for models whose free-tier gate requires stream:true upstream.
+func (s *Server) relayOpenAIAggregated(
+	w http.ResponseWriter,
+	resp *http.Response,
+	r *http.Request,
+	incomingModel, targetModel string,
+	reqBody []byte,
+	start time.Time,
+) {
+	defer resp.Body.Close()
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not decompress upstream stream: "+err.Error())
+			s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	agg, err := proxy.AggregateOpenAIStream(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	filterUndeclaredOpenAITools(agg, reqBody)
+	writeJSON(w, http.StatusOK, agg)
+	stopReason := ""
+	if len(agg.Choices) > 0 && agg.Choices[0].FinishReason != nil {
+		stopReason = *agg.Choices[0].FinishReason
+	}
+	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
+		agg.Usage.PromptTokens, agg.Usage.CompletionTokens, agg.Usage.CachedPromptTokens(), 0, stopReason,
+		string(reqBody), mustJSON(agg), time.Since(start))
 }
 
 func promptCacheKeyFromOpenAIBody(body []byte) string {

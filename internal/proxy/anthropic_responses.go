@@ -28,8 +28,9 @@ type BridgeOptions struct {
 	// EffortLevels is the target model's ordered reasoning scale, low to
 	// high; nil/empty falls back to DefaultReasoningLevels.
 	EffortLevels []string
-	// DefaultEffort is used when thinking is absent; "" means minimal.
-	// Garbage values fall back to minimal, never to upstream default.
+	// DefaultEffort is used when thinking is absent. The proxy config now
+	// defaults it to xhigh; an empty/garbage value falls back to minimal for
+	// compatibility with older config files.
 	DefaultEffort string
 }
 
@@ -111,7 +112,24 @@ func anthropicMessagesToResponsesInput(messages []AnthropicMessage) ([]any, erro
 			role = "user"
 		}
 		if m.Content.IsStr {
-			items = append(items, responsesTextMessage(role, m.Content.Text))
+			if role == "assistant" || strings.TrimSpace(m.Content.Text) == "" {
+				items = append(items, responsesTextMessage(role, m.Content.Text))
+				continue
+			}
+			// User string content goes through the same video split as
+			// text blocks: clients send simple turns as a bare string.
+			spans, err := splitVideoMarkers(m.Content.Text)
+			if err != nil {
+				return nil, err
+			}
+			for _, s := range spans {
+				switch {
+				case s.isVideo:
+					items = append(items, responsesVideoMessage(role, s.videoURL))
+				case strings.TrimSpace(s.text) != "":
+					items = append(items, responsesTextMessage(role, s.text))
+				}
+			}
 			continue
 		}
 		var assistantText []string
@@ -128,7 +146,22 @@ func anthropicMessagesToResponsesInput(messages []AnthropicMessage) ([]any, erro
 				if role == "assistant" {
 					assistantText = append(assistantText, b.Text)
 				} else {
-					items = append(items, responsesTextMessage(role, b.Text))
+					// User text may carry [[video ...]] markers (the stock
+					// clients cannot emit video blocks). Each marker becomes
+					// a native input_video part in place.
+					flushAssistantText()
+					spans, err := splitVideoMarkers(b.Text)
+					if err != nil {
+						return nil, err
+					}
+					for _, s := range spans {
+						switch {
+						case s.isVideo:
+							items = append(items, responsesVideoMessage(role, s.videoURL))
+						case strings.TrimSpace(s.text) != "":
+							items = append(items, responsesTextMessage(role, s.text))
+						}
+					}
 				}
 			case "image":
 				flushAssistantText()
@@ -139,6 +172,36 @@ func anthropicMessagesToResponsesInput(messages []AnthropicMessage) ([]any, erro
 							"type": "input_image", "image_url": url,
 						}},
 					})
+				}
+			case "video":
+				// Proxy-specific block (no Anthropic equivalent): a video
+				// attachment with a base64 or URL source. Goes upstream as
+				// native input_video — never frame-split.
+				flushAssistantText()
+				url, err := anthropicVideoURL(b.Source)
+				if err != nil {
+					return nil, err
+				}
+				if url != "" {
+					items = append(items, responsesVideoMessage(role, url))
+				}
+			case "document":
+				// Stock clients cannot emit video blocks, so a document
+				// block carrying video/mp4 is also accepted as video.
+				// Anything else falls back to its text (usually "").
+				flushAssistantText()
+				if isVideoSource(b.Source) {
+					url, err := anthropicVideoURL(b.Source)
+					if err != nil {
+						return nil, err
+					}
+					if url != "" {
+						items = append(items, responsesVideoMessage(role, url))
+						break
+					}
+				}
+				if strings.TrimSpace(b.Text) != "" {
+					items = append(items, responsesTextMessage(role, b.Text))
 				}
 			case "tool_use":
 				flushAssistantText()
@@ -200,6 +263,74 @@ func responsesTextMessage(role, text string) map[string]any {
 	return map[string]any{
 		"type": "message", "role": role,
 		"content": []any{map[string]any{"type": partType, "text": text}},
+	}
+}
+
+// maxVideoBytes caps a single inline base64 video payload. Staging probes
+// (Sep 2026) showed upstream /v1/responses stalling on large inline video:
+// 7MB took 65s with a retry, 10MB never returned headers. 8MB fails fast
+// here instead of hanging the client ~110s and wedging a shared upstream
+// slot. Local files over videoTranscodeThreshold are ffmpeg-transcoded down
+// first (see video.go), so this cap normally only bites when ffmpeg is
+// missing or the clip won't compress.
+const maxVideoBytes = 8 << 20
+
+// anthropicVideoURL resolves a video block's source to an upstream video_url:
+// inline base64 mp4 becomes a data: URI, remote URLs pass through. A nil or
+// empty source returns "". An explicit video block whose base64 source is not
+// mp4 (or exceeds the cap) is an error — upstream accepts mp4 only.
+func anthropicVideoURL(src *AnthropicImageSource) (string, error) {
+	if src == nil {
+		return "", nil
+	}
+	if src.URL != "" {
+		return src.URL, nil
+	}
+	if src.Type != "base64" || src.Data == "" {
+		return "", nil
+	}
+	media := src.MediaType
+	if media == "" {
+		media = "video/mp4"
+	}
+	if media != "video/mp4" {
+		return "", fmt.Errorf("unsupported video media type %q: upstream accepts video/mp4 only", media)
+	}
+	if len(src.Data) > maxVideoBytes*4/3 {
+		return "", fmt.Errorf("video payload exceeds the 20MB cap (%d bytes base64)", len(src.Data))
+	}
+	return "data:video/mp4;base64," + src.Data, nil
+}
+
+// isVideoSource reports whether a document block's source carries video (as
+// opposed to a PDF or other file). Stock clients cannot emit video blocks, so
+// this is the fallback ingress for video attachments. A url source counts as
+// video only when its media type is empty or video/*: a document block
+// pointing at e.g. a PDF URL must stay a document, otherwise upstream tries
+// to download it as media and fails (media_url_origin_error).
+func isVideoSource(src *AnthropicImageSource) bool {
+	if src == nil {
+		return false
+	}
+	if src.Type == "base64" {
+		media := src.MediaType
+		if media == "" {
+			return false
+		}
+		return strings.HasPrefix(media, "video/")
+	}
+	if src.Type == "url" && src.URL != "" {
+		return src.MediaType == "" || strings.HasPrefix(src.MediaType, "video/")
+	}
+	return false
+}
+
+func responsesVideoMessage(role, url string) map[string]any {
+	return map[string]any{
+		"type": "message", "role": role,
+		"content": []any{map[string]any{
+			"type": "input_video", "video_url": url,
+		}},
 	}
 }
 

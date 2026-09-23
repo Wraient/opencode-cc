@@ -13,15 +13,15 @@ import (
 func TestSetZenSessionHeadersForwardsClientValues(t *testing.T) {
 	up, _ := http.NewRequest(http.MethodPost, "http://x/v1/responses", nil)
 	down := http.Header{}
-	down.Set("x-opencode-session", "ses_client123")
-	down.Set("x-opencode-request", "req_1")
+	down.Set("x-opencode-session", "ses_0123456789abcdefghijklmnop")
+	down.Set("x-opencode-request", "msg_abcdefghijklmnopqrstuvwxyz")
 	down.Set("x-opencode-project", "prj_9")
 	down.Set("x-opencode-client", "opencode")
 	setZenSessionHeaders(up, down, "sticky-should-lose")
-	if got := up.Header.Get("x-opencode-session"); got != "ses_client123" {
+	if got := up.Header.Get("x-opencode-session"); got != "ses_0123456789abcdefghijklmnop" {
 		t.Errorf("session = %q, want forwarded client value", got)
 	}
-	if got := up.Header.Get("x-opencode-request"); got != "req_1" {
+	if got := up.Header.Get("x-opencode-request"); got != "msg_abcdefghijklmnopqrstuvwxyz" {
 		t.Errorf("request = %q, want forwarded client value", got)
 	}
 	if got := up.Header.Get("x-opencode-project"); got != "prj_9" {
@@ -29,6 +29,20 @@ func TestSetZenSessionHeadersForwardsClientValues(t *testing.T) {
 	}
 	if got := up.Header.Get("x-opencode-client"); got != "opencode" {
 		t.Errorf("client = %q, want forwarded client value", got)
+	}
+}
+
+func TestSetZenSessionHeadersNormalizesLegacyIdentity(t *testing.T) {
+	up, _ := http.NewRequest(http.MethodPost, "http://x/v1/chat/completions", nil)
+	down := http.Header{}
+	down.Set("x-session-id", "550e8400-e29b-41d4-a716-446655440000")
+	setZenSessionHeaders(up, down, "sticky-key")
+	got := up.Header.Get("x-opencode-session")
+	if !canonicalSessionPattern.MatchString(got) {
+		t.Fatalf("normalized session = %q, want canonical shape", got)
+	}
+	if up.Header.Get("x-session-affinity") != got || up.Header.Get("x-session-id") != got {
+		t.Fatalf("affinity headers do not match normalized session: %q", got)
 	}
 }
 
@@ -50,8 +64,14 @@ func TestSetZenSessionHeadersSynthesizes(t *testing.T) {
 	if got := up.Header.Get("x-opencode-client"); got != "cli" {
 		t.Errorf("client = %q, want stock cli", got)
 	}
-	if got := up.Header.Get("x-opencode-project"); got != "" {
-		t.Errorf("project = %q, want omitted (never fabricated)", got)
+	if got := up.Header.Get("x-opencode-project"); got != "global" {
+		t.Errorf("project = %q, want global fallback", got)
+	}
+	if got := up.Header.Get("x-session-affinity"); got != up.Header.Get("x-opencode-session") {
+		t.Errorf("session affinity = %q, want it to match x-opencode-session", got)
+	}
+	if got := up.Header.Get("x-session-id"); got != up.Header.Get("x-opencode-session") {
+		t.Errorf("session id = %q, want it to match x-opencode-session", got)
 	}
 	// No proxy fingerprint anywhere.
 	for _, h := range []string{"x-opencode-session", "x-opencode-request", "x-opencode-client"} {
@@ -100,14 +120,14 @@ func TestPassthroughSendsSessionHeaders(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses",
 		strings.NewReader(`{"model":"muse-spark-1.3-contributor-free","input":"say ok"}`))
-	req.Header.Set("x-opencode-session", "ses_downstream1")
+	req.Header.Set("x-opencode-session", "ses_0123456789abcdefghijklmnop")
 	rec := httptest.NewRecorder()
 	srv.ResponsesProxy().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if gotSession != "ses_downstream1" {
+	if gotSession != "ses_0123456789abcdefghijklmnop" {
 		t.Errorf("upstream session = %q, want forwarded downstream value", gotSession)
 	}
 	if gotClient == "" || gotRequest == "" {

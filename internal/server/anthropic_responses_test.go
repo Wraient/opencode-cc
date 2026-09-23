@@ -277,11 +277,11 @@ func TestBridgeThinkingMapsToModelMax(t *testing.T) {
 	}
 	post(`"thinking":{"type":"enabled","budget_tokens":31999},`)
 	post(`"thinking":{"type":"enabled","effort":"ultracode"},`)
-	post(``) // no thinking: fast default
+	post(``) // no thinking: configured xhigh default
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !reflect.DeepEqual(seen, []string{"xhigh", "xhigh", "minimal"}) {
-		t.Errorf("upstream efforts = %v, want [xhigh xhigh minimal]", seen)
+	if !reflect.DeepEqual(seen, []string{"xhigh", "xhigh", "xhigh"}) {
+		t.Errorf("upstream efforts = %v, want [xhigh xhigh xhigh]", seen)
 	}
 }

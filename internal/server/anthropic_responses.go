@@ -13,44 +13,23 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"crypto/rand"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Kiowx/opencode-cc/internal/proxy"
 )
 
 // bridgeSessionKey returns the sticky key for Zen session headers, falling
-// back to one process-stable session id. Since 2026-09 the upstream gates
-// free-tier access on x-opencode-session (MissingSessionID otherwise), so the
-// bridge can never send an empty one; without a client sticky key all bridge
-// traffic shares a single Zen session (single-user proxy: acceptable).
-var (
-	bridgeSessionOnce sync.Once
-	bridgeSessionID   string
-)
-
+// back to the same process-stable canonical session id used by the regular
+// proxy path. The current free-tier gate rejects non-canonical random IDs.
 func bridgeSessionKey(stickyKey string) string {
 	if strings.TrimSpace(stickyKey) != "" {
 		return stickyKey
 	}
-	bridgeSessionOnce.Do(func() {
-		const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-		var b [26]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			bridgeSessionID = "ses_00000000000000000000000000"
-			return
-		}
-		for i, v := range b {
-			b[i] = alphabet[int(v)%len(alphabet)]
-		}
-		bridgeSessionID = "ses_" + string(b[:])
-	})
-	return bridgeSessionID
+	return fallbackSessionID()
 }
 
 // proxyAnthropicViaResponses serves POST /v1/messages for a Responses-native
@@ -88,6 +67,16 @@ func (s *Server) proxyAnthropicViaResponses(
 			http.StatusInternalServerError, err.Error(), body, time.Since(start))
 		return
 	}
+	upstreamStream := areq.Stream
+	if proxy.IsFreeModel(targetModel) {
+		upBody, err = proxy.PrepareFreeResponsesBody(upBody)
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+				"could not prepare Zen free-tier Responses request: "+err.Error())
+			return
+		}
+		upstreamStream = true
+	}
 
 	select {
 	case museSparkUpstreamSlots <- struct{}{}:
@@ -112,13 +101,13 @@ func (s *Server) proxyAnthropicViaResponses(
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("User-Agent", ocUA())
 	setZenSessionHeaders(upReq, r.Header, stickyKey)
-	if areq.Stream {
+	if upstreamStream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	} else {
 		upReq.Header.Set("Accept", "application/json")
 	}
 
-	httpClient := s.upstreamClient(areq.Stream, timeoutSeconds)
+	httpClient := s.upstreamClient(upstreamStream, timeoutSeconds)
 	resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 	if err != nil {
 		logUpstreamError(r, incomingModel, targetModel, areq.Stream, time.Since(start), err)
@@ -141,11 +130,68 @@ func (s *Server) proxyAnthropicViaResponses(
 		return
 	}
 
-	if areq.Stream {
-		s.relayAnthropicResponsesStream(w, resp, r, incomingModel, targetModel, areq, body, start)
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
+		(contentType == "" || strings.Contains(contentType, "text/event-stream")) {
+		if areq.Stream {
+			s.relayAnthropicResponsesStream(w, resp, r, incomingModel, targetModel, areq, body, start)
+		} else {
+			s.relayAnthropicResponsesAggregated(w, resp, r, incomingModel, targetModel, areq, body, start)
+		}
 		return
 	}
 	s.relayAnthropicResponsesJSON(w, resp, r, incomingModel, targetModel, areq, body, start)
+}
+
+func (s *Server) relayAnthropicResponsesAggregated(
+	w http.ResponseWriter,
+	resp *http.Response,
+	r *http.Request,
+	incomingModel, targetModel string,
+	areq *proxy.AnthropicRequest,
+	reqBody []byte,
+	start time.Time,
+) {
+	defer resp.Body.Close()
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadGateway, "api_error", "could not decompress upstream stream: "+err.Error())
+			s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "could not read upstream stream: "+err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	final, err := proxy.AggregateResponsesSSE(raw)
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	aresp, err := proxy.ConvertResponsesToAnthropicResponse(final, incomingModel)
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	filterUndeclaredToolUses(aresp, areq.Tools)
+	writeJSON(w, http.StatusOK, aresp)
+	stop := ""
+	if aresp.StopReason != nil {
+		stop = *aresp.StopReason
+	}
+	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
+		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
+		stop, string(reqBody), mustJSON(aresp), time.Since(start))
 }
 
 // relayAnthropicResponsesJSON converts a non-streaming upstream Responses

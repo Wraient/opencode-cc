@@ -99,6 +99,16 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 				"could not encode upstream request: "+err.Error())
 			return
 		}
+		upstreamStream := in.Stream
+		if proxy.IsFreeModel(targetModel) {
+			upBody, err = proxy.PrepareFreeChatBody(upBody)
+			if err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error",
+					"could not prepare Zen free-tier request: "+err.Error())
+				return
+			}
+			upstreamStream = true
+		}
 
 		upURL := strings.TrimRight(upstream, "/") + "/v1/chat/completions"
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upURL, bytes.NewReader(upBody))
@@ -111,13 +121,13 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 		upReq.Header.Set("Content-Type", "application/json")
 		upReq.Header.Set("User-Agent", ocUA())
 		setZenSessionHeaders(upReq, r.Header, chatReq.PromptCacheKey)
-		if in.Stream {
+		if upstreamStream {
 			upReq.Header.Set("Accept", "text/event-stream")
 		} else {
 			upReq.Header.Set("Accept", "application/json")
 		}
 
-		httpClient := s.upstreamClient(in.Stream, cfg.RequestTimeoutSeconds)
+		httpClient := s.upstreamClient(upstreamStream, cfg.RequestTimeoutSeconds)
 		resp, err := httpClient.Do(upReq)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
@@ -127,9 +137,13 @@ func (s *Server) ResponsesProxy() http.HandlerFunc {
 		}
 
 		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-		if in.Stream && resp.StatusCode < http.StatusBadRequest &&
+		if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
 			(contentType == "" || strings.Contains(contentType, "text/event-stream")) {
-			s.relayResponsesStream(w, resp, r, incomingModel, targetModel, body, start)
+			if in.Stream {
+				s.relayResponsesStream(w, resp, r, incomingModel, targetModel, body, start)
+			} else {
+				s.relayResponsesChatAggregated(w, resp, r, incomingModel, targetModel, body, start)
+			}
 			return
 		}
 		s.relayResponsesJSON(w, resp, r, incomingModel, targetModel, in.Stream, body, start)
@@ -271,6 +285,74 @@ func (s *Server) relayResponsesAnthropicJSON(
 		anthResp.Usage.CacheReadInputTokens, anthResp.Usage.CacheCreationInputTokens,
 		stopReason,
 		string(reqBody), mustJSON(out), time.Since(start))
+}
+
+func (s *Server) relayResponsesChatAggregated(
+	w http.ResponseWriter,
+	resp *http.Response,
+	r *http.Request,
+	incomingModel, targetModel string,
+	reqBody []byte,
+	start time.Time,
+) {
+	defer resp.Body.Close()
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "api_error", "could not decompress upstream stream: "+err.Error())
+			s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	chat, err := proxy.AggregateOpenAIStream(io.LimitReader(reader, maxResponseBytes+1))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "api_error", err.Error())
+		s.logFailed(r.Context(), r, incomingModel, targetModel, false, http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
+		return
+	}
+	out := proxy.ConvertResponsesResponse(chat, incomingModel)
+	filterUndeclaredResponsesTools(out, reqBody)
+	writeJSON(w, http.StatusOK, out)
+	stopReason := ""
+	if len(chat.Choices) > 0 && chat.Choices[0].FinishReason != nil {
+		stopReason = *chat.Choices[0].FinishReason
+	}
+	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
+		chat.Usage.PromptTokens, chat.Usage.CompletionTokens, chat.Usage.CachedPromptTokens(), 0, stopReason,
+		string(reqBody), mustJSON(out), time.Since(start))
+}
+
+func filterUndeclaredResponsesTools(out *proxy.ResponsesResponse, reqBody []byte) {
+	if out == nil {
+		return
+	}
+	var request struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(reqBody, &request) != nil {
+		return
+	}
+	declared := make(map[string]struct{}, len(request.Tools))
+	for _, tool := range request.Tools {
+		if tool.Name != "" {
+			declared[tool.Name] = struct{}{}
+		}
+	}
+	filtered := out.Output[:0]
+	for _, item := range out.Output {
+		if item.Type == "function_call" {
+			if _, ok := declared[item.Name]; !ok {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	out.Output = filtered
 }
 
 func (s *Server) relayResponsesJSON(

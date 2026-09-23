@@ -44,36 +44,36 @@ export default function Keys() {
     setCreatedPlain(created.plain_key);
     setCreating(false);
     await refresh();
-    notify("密钥已创建");
+    notify("Key created");
   }
   async function handleUpdate(id: number, body: KeyBody) {
     await api.updateKey(id, body);
     setEditing(null);
     await refresh();
-    notify("已保存");
+    notify("Saved");
   }
   async function handleDelete(id: number) {
-    if (!confirm("确定删除这个密钥？此操作不可撤销。")) return;
+    if (!confirm("Delete this key? This cannot be undone.")) return;
     await api.deleteKey(id);
     await refresh();
-    notify("已删除");
+    notify("Deleted");
   }
   async function handleReset(id: number) {
     await api.resetKey(id);
     await refresh();
-    notify("用量已重置");
+    notify("Usage reset");
   }
 
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="API 密钥"
-        desc="为客户端签发密钥，可设置额度与 IP 白名单。"
+        title="API Keys"
+        desc="Issue keys to clients, with quotas and IP allowlists."
         actions={
           <div className="flex items-center gap-3">
             {flash && <span className="text-xs text-accent-green">{flash}</span>}
             <button onClick={() => setCreating(true)} className="btn-primary">
-              <PlusIcon /> 新建密钥
+              <PlusIcon /> New key
             </button>
           </div>
         }
@@ -89,22 +89,22 @@ export default function Keys() {
             </svg>
           </div>
           <div className="text-sm text-slate-400">
-            客户端把密钥放在 <code className="text-accent-glow font-mono">Authorization: Bearer &lt;密钥&gt;</code>。
-            在 Claude Code 里：<code className="text-slate-300 font-mono">set ANTHROPIC_AUTH_TOKEN=sk-xxxx</code>。
-            启用鉴权需在「设置」页打开「要求 API 密钥」。
+            Clients send the key as <code className="text-accent-glow font-mono">Authorization: Bearer &lt;key&gt;</code>.
+            In Claude Code: <code className="text-slate-300 font-mono">set ANTHROPIC_AUTH_TOKEN=sk-xxxx</code>.
+            To enforce auth, enable "Require API key" on the Settings page.
           </div>
         </div>
       </Card>
 
       {loading ? (
         <div className="flex items-center justify-center py-16 text-slate-500 gap-2">
-          <Spinner /> 加载中…
+          <Spinner /> Loading…
         </div>
       ) : keys.length === 0 ? (
         <Card>
           <EmptyState
-            title="还没有 API 密钥"
-            hint="新建一个密钥供客户端访问代理；开启鉴权前请至少创建一个密钥。"
+            title="No API keys yet"
+            hint="Create a key for clients to reach the proxy; create at least one before enabling auth."
           />
         </Card>
       ) : (
@@ -160,7 +160,7 @@ function KeyRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono text-sm text-slate-200">{k.key_prefix}…</span>
-            {k.enabled ? <Badge tone="green">启用</Badge> : <Badge tone="red">已停用</Badge>}
+            {k.enabled ? <Badge tone="green">Enabled</Badge> : <Badge tone="red">Disabled</Badge>}
             {(() => {
               const e = expiryBadge(k.expires_at);
               return e ? <Badge tone={e.tone}>{e.text}</Badge> : null;
@@ -168,19 +168,19 @@ function KeyRow({
             {k.name && <span className="text-sm text-slate-400">· {k.name}</span>}
           </div>
           <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
-            <span>累计 <span className="text-slate-300 font-mono">{fmtNum(k.used_tokens)}</span> tok · <span className="text-slate-300 font-mono">{fmtNum(k.used_requests)}</span> 次</span>
-            <span>今日 <span className="text-accent-cyan font-mono">{fmtNum(k.daily_used_tokens)}</span> tok · <span className="text-accent-cyan font-mono">{fmtNum(k.daily_used_requests)}</span> 次</span>
-            {k.allowed_ips && <span>IP 白名单：<span className="font-mono text-slate-400">{k.allowed_ips}</span></span>}
+            <span>Total <span className="text-slate-300 font-mono">{fmtNum(k.used_tokens)}</span> tok · <span className="text-slate-300 font-mono">{fmtNum(k.used_requests)}</span> reqs</span>
+            <span>Today <span className="text-accent-cyan font-mono">{fmtNum(k.daily_used_tokens)}</span> tok · <span className="text-accent-cyan font-mono">{fmtNum(k.daily_used_requests)}</span> reqs</span>
+            {k.allowed_ips && <span>IP allowlist: <span className="font-mono text-slate-400">{k.allowed_ips}</span></span>}
           </div>
         </div>
 
         {/* Right: actions */}
         <div className="flex items-center gap-1.5 shrink-0">
-          <button onClick={onReset} className="btn-ghost !py-1.5 !px-2.5 !text-xs" title="重置用量">
-            重置
+          <button onClick={onReset} className="btn-ghost !py-1.5 !px-2.5 !text-xs" title="Reset usage">
+            Reset
           </button>
-          <button onClick={onEdit} className="btn-ghost !py-1.5 !px-2.5 !text-xs">编辑</button>
-          <button onClick={onDelete} className="btn-ghost !py-1.5 !px-2.5 !text-xs text-accent-red">删除</button>
+          <button onClick={onEdit} className="btn-ghost !py-1.5 !px-2.5 !text-xs">Edit</button>
+          <button onClick={onDelete} className="btn-ghost !py-1.5 !px-2.5 !text-xs text-accent-red">Delete</button>
         </div>
       </div>
 
@@ -188,20 +188,20 @@ function KeyRow({
       {(k.token_quota > 0 || k.request_quota > 0) && (
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
           {k.token_quota > 0 && (
-            <QuotaBar label="Token 总额度" used={k.used_tokens} quota={k.token_quota} pct={tokenPct} />
+            <QuotaBar label="Total token quota" used={k.used_tokens} quota={k.token_quota} pct={tokenPct} />
           )}
           {k.request_quota > 0 && (
-            <QuotaBar label="请求次数额度" used={k.used_requests} quota={k.request_quota} pct={reqPct} />
+            <QuotaBar label="Request quota" used={k.used_requests} quota={k.request_quota} pct={reqPct} />
           )}
         </div>
       )}
       {(k.daily_token_limit > 0 || k.daily_request_limit > 0) && (
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
           {k.daily_token_limit > 0 && (
-            <QuotaBar label="今日 Token 限额" used={k.daily_used_tokens} quota={k.daily_token_limit} pct={Math.min(100, (k.daily_used_tokens / k.daily_token_limit) * 100)} />
+            <QuotaBar label="Daily token limit" used={k.daily_used_tokens} quota={k.daily_token_limit} pct={Math.min(100, (k.daily_used_tokens / k.daily_token_limit) * 100)} />
           )}
           {k.daily_request_limit > 0 && (
-            <QuotaBar label="今日请求限额" used={k.daily_used_requests} quota={k.daily_request_limit} pct={Math.min(100, (k.daily_used_requests / k.daily_request_limit) * 100)} />
+            <QuotaBar label="Daily request limit" used={k.daily_used_requests} quota={k.daily_request_limit} pct={Math.min(100, (k.daily_used_requests / k.daily_request_limit) * 100)} />
           )}
         </div>
       )}
@@ -296,7 +296,7 @@ function KeyModal({
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div className="relative w-full max-w-lg glass p-6 animate-fade-in max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-5">
-          <h3 className="text-base font-semibold text-white">{initial ? "编辑密钥" : "新建 API 密钥"}</h3>
+          <h3 className="text-base font-semibold text-white">{initial ? "Edit key" : "New API key"}</h3>
           <button onClick={onClose} className="btn-ghost !px-2.5 !py-2">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" /></svg>
           </button>
@@ -304,12 +304,12 @@ function KeyModal({
 
         <div className="space-y-4">
           <div>
-            <label className="label">备注名</label>
-            <input className="input" placeholder="例如：我的电脑 / 同事A" value={form.name} onChange={(e) => set("name", e.target.value)} />
+            <label className="label">Name</label>
+            <input className="input" placeholder="e.g. my laptop / coworker" value={form.name} onChange={(e) => set("name", e.target.value)} />
           </div>
 
           <label className="flex items-center justify-between cursor-pointer">
-            <span className="text-sm text-slate-200">启用此密钥</span>
+            <span className="text-sm text-slate-200">Enable this key</span>
             <button type="button" onClick={() => set("enabled", !form.enabled)} className={`relative w-11 h-6 rounded-full transition-colors ${form.enabled ? "bg-accent" : "bg-ink-600"}`}>
               <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.enabled ? "translate-x-5" : ""}`} />
             </button>
@@ -317,25 +317,25 @@ function KeyModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Token 总额度（0=不限）</label>
+              <label className="label">Total token quota (0=unlimited)</label>
               <input type="number" min={0} className="input font-mono" value={form.token_quota} onChange={(e) => set("token_quota", Number(e.target.value))} />
             </div>
             <div>
-              <label className="label">请求次数额度（0=不限）</label>
+              <label className="label">Request quota (0=unlimited)</label>
               <input type="number" min={0} className="input font-mono" value={form.request_quota} onChange={(e) => set("request_quota", Number(e.target.value))} />
             </div>
             <div>
-              <label className="label">每日 Token 限额（0=不限）</label>
+              <label className="label">Daily token limit (0=unlimited)</label>
               <input type="number" min={0} className="input font-mono" value={form.daily_token_limit} onChange={(e) => set("daily_token_limit", Number(e.target.value))} />
             </div>
             <div>
-              <label className="label">每日请求限额（0=不限）</label>
+              <label className="label">Daily request limit (0=unlimited)</label>
               <input type="number" min={0} className="input font-mono" value={form.daily_request_limit} onChange={(e) => set("daily_request_limit", Number(e.target.value))} />
             </div>
           </div>
 
           <div>
-            <label className="label">有效期</label>
+            <label className="label">Expiry</label>
             <div className="flex gap-2 flex-wrap items-center">
               <select
                 className="input !w-auto"
@@ -347,9 +347,9 @@ function KeyModal({
                   else commitExpiry("date", expDays, expDate || tomorrowLocal());
                 }}
               >
-                <option value="never">永久有效</option>
-                <option value="days">N 天后过期</option>
-                <option value="date">指定日期</option>
+                <option value="never">Never expires</option>
+                <option value="days">Expires in N days</option>
+                <option value="date">Specific date</option>
               </select>
               {expMode === "days" && (
                 <div className="flex items-center gap-2">
@@ -364,7 +364,7 @@ function KeyModal({
                       commitExpiry("days", n);
                     }}
                   />
-                  <span className="text-xs text-slate-500">天</span>
+                  <span className="text-xs text-slate-500">days</span>
                 </div>
               )}
               {expMode === "date" && (
@@ -381,23 +381,23 @@ function KeyModal({
             </div>
             <p className="text-xs text-slate-500 mt-1.5">
               {form.expires_at
-                ? `将于 ${new Date(form.expires_at * 1000).toLocaleString()} 过期`
-                : "此密钥不会过期。"}
+                ? `Expires ${new Date(form.expires_at * 1000).toLocaleString()}`
+                : "This key never expires."}
             </p>
           </div>
 
           <div>
-            <label className="label">IP 白名单（逗号分隔 CIDR，留空=不限）</label>
-            <input className="input font-mono" placeholder="例如：1.2.3.4, 10.0.0.0/8" value={form.allowed_ips} onChange={(e) => set("allowed_ips", e.target.value)} />
-            <p className="text-xs text-slate-500 mt-1.5">支持单 IP 和 CIDR 网段；仅信任来自本机反向代理的 X-Forwarded-For。</p>
+            <label className="label">IP allowlist (comma-separated CIDR, empty=unlimited)</label>
+            <input className="input font-mono" placeholder="e.g. 1.2.3.4, 10.0.0.0/8" value={form.allowed_ips} onChange={(e) => set("allowed_ips", e.target.value)} />
+            <p className="text-xs text-slate-500 mt-1.5">Single IPs and CIDR ranges supported; X-Forwarded-For is only trusted from a local reverse proxy.</p>
           </div>
         </div>
 
         <div className="flex justify-end gap-2 mt-6">
-          <button onClick={onClose} className="btn-ghost">取消</button>
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
           <button onClick={submit} disabled={saving} className="btn-primary">
             {saving ? <Spinner /> : null}
-            {initial ? "保存" : "创建"}
+            {initial ? "Save" : "Create"}
           </button>
         </div>
       </div>
@@ -420,21 +420,21 @@ function PlainKeyModal({ plain, onClose }: { plain: string; onClose: () => void 
           <div className="w-8 h-8 rounded-lg bg-accent-green/15 border border-accent-green/30 flex items-center justify-center">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </div>
-          <h3 className="text-base font-semibold text-white">密钥已创建</h3>
+          <h3 className="text-base font-semibold text-white">Key created</h3>
         </div>
         <p className="text-sm text-accent-amber mb-4">
-          ⚠️ 这是该密钥的完整明文，<b>仅显示这一次</b>。请立即复制保存，之后无法再次查看。
+          ⚠️ This is the full key in plaintext, <b>shown only once</b>. Copy and save it now — you cannot view it again.
         </p>
         <div className="flex gap-2">
           <code className="flex-1 rounded-xl bg-ink-950/80 border border-white/[0.06] px-3 py-2.5 font-mono text-sm text-accent-glow break-all">
             {plain}
           </code>
           <button onClick={copy} className="btn-primary shrink-0">
-            {copied ? "已复制" : "复制"}
+            {copied ? "Copied" : "Copy"}
           </button>
         </div>
         <div className="flex justify-end mt-5">
-          <button onClick={onClose} className="btn-ghost">我已保存</button>
+          <button onClick={onClose} className="btn-ghost">I've saved it</button>
         </div>
       </div>
     </div>
@@ -464,13 +464,13 @@ function expiryBadge(expiresAt: number): { text: string; tone: "amber" | "red" |
   const now = Date.now();
   const exp = expiresAt * 1000;
   const diff = exp - now;
-  if (diff <= 0) return { text: "已过期", tone: "red" };
-  if (diff < 24 * 3600 * 1000) return { text: `${Math.max(1, Math.floor(diff / 3600000))}小时后过期`, tone: "red" };
+  if (diff <= 0) return { text: "Expired", tone: "red" };
+  if (diff < 24 * 3600 * 1000) return { text: `${Math.max(1, Math.floor(diff / 3600000))}h left`, tone: "red" };
   const days = Math.floor(diff / (24 * 3600 * 1000));
-  if (days <= 7) return { text: `${days}天后过期`, tone: "amber" };
+  if (days <= 7) return { text: `${days}d left`, tone: "amber" };
   const d = new Date(exp);
   return {
-    text: `${d.getMonth() + 1}/${d.getDate()} 到期`,
+    text: `Expires ${d.getMonth() + 1}/${d.getDate()}`,
     tone: "cyan",
   };
 }

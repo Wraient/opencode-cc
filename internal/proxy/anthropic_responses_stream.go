@@ -201,10 +201,16 @@ func (c *ResponsesToAnthropicStreamer) ensureTextBlock() error {
 		return err
 	}
 	c.textOpen = true
+	// Claim the index at open (like flushTool): deltas and the later stop
+	// both address nextIndex-1 while this block is open. Incrementing only
+	// at close made every text delta emit index -1, which strict clients
+	// (Claude Code SDK) reject by aborting the whole stream.
+	idx := c.nextIndex
+	c.nextIndex++
 	empty := ""
 	return c.writeEvent("content_block_start", streamContentBlockStart{
 		Type:  "content_block_start",
-		Index: c.nextIndex,
+		Index: idx,
 		ContentBlock: streamContentRef{
 			Type: "text", Text: &empty,
 		},
@@ -216,7 +222,6 @@ func (c *ResponsesToAnthropicStreamer) closeTextBlock() error {
 		return nil
 	}
 	c.textOpen = false
-	c.nextIndex++
 	return c.writeEvent("content_block_stop", streamContentBlockStop{
 		Type: "content_block_stop", Index: c.nextIndex - 1,
 	})

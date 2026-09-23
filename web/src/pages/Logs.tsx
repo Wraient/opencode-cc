@@ -39,12 +39,12 @@ export default function Logs() {
   return (
     <div className="animate-fade-in">
       <PageHeader
-        title="请求日志"
-        desc="每个代理请求，含转换前后的完整载荷。"
+        title="Request Logs"
+        desc="Every proxied request, with full payloads before and after translation."
         actions={
           <input
             className="input w-56"
-            placeholder="筛选 模型 / 状态…"
+            placeholder="Filter model / status…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
@@ -54,21 +54,21 @@ export default function Logs() {
       <Card className="overflow-hidden p-0">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-slate-500 gap-2">
-            <Spinner /> 加载中…
+            <Spinner /> Loading…
           </div>
         ) : shown.length === 0 ? (
-          <EmptyState title="暂无请求" hint="转发到 Zen 的请求会实时显示在这里。" />
+          <EmptyState title="No requests yet" hint="Requests forwarded to Zen show up here live." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wider text-slate-500 border-b border-white/[0.05]">
-                  <th className="font-medium px-4 py-3">时间</th>
-                  <th className="font-medium px-4 py-3">模型 → 目标</th>
-                  <th className="font-medium px-4 py-3">状态</th>
-                  <th className="font-medium px-4 py-3">延迟</th>
+                  <th className="font-medium px-4 py-3">Time</th>
+                  <th className="font-medium px-4 py-3">Model → Target</th>
+                  <th className="font-medium px-4 py-3">Status</th>
+                  <th className="font-medium px-4 py-3">Latency</th>
                   <th className="font-medium px-4 py-3">Token</th>
-                  <th className="font-medium px-4 py-3">停止原因</th>
+                  <th className="font-medium px-4 py-3">Stop reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -93,7 +93,7 @@ export default function Logs() {
                             <path d="M5 12h14M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
                           </svg>
                           <span className="font-mono text-xs text-accent-glow">{r.target_model}</span>
-                          {r.stream && <Badge tone="cyan">流式</Badge>}
+                          {r.stream && <Badge tone="cyan">Stream</Badge>}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -114,7 +114,7 @@ export default function Logs() {
                             </div>
                             {r.cached_input_tokens > 0 && (
                               <div className="mt-0.5 text-[10px] text-accent-green/80">
-                                缓存 {fmtNum(r.cached_input_tokens)}
+                                Cached {fmtNum(r.cached_input_tokens)}
                               </div>
                             )}
                           </div>
@@ -173,7 +173,7 @@ function DetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
       <div className="relative w-full max-w-2xl h-full glass rounded-none border-l border-y-0 border-r-0 overflow-y-auto animate-fade-in">
         <div className="sticky top-0 z-10 bg-ink-850/90 backdrop-blur-xl border-b border-white/[0.06] px-6 py-4 flex items-center justify-between">
           <div>
-            <div className="text-sm font-semibold text-white">请求 #{id}</div>
+            <div className="text-sm font-semibold text-white">Request #{id}</div>
             {row && (
               <div className="text-xs text-slate-500">{fmtDateTime(row.ts)}</div>
             )}
@@ -188,29 +188,29 @@ function DetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
         <div className="p-6">
           {loading ? (
             <div className="flex items-center justify-center py-16 text-slate-500 gap-2">
-              <Spinner /> 加载中…
+              <Spinner /> Loading…
             </div>
           ) : !row ? (
-            <EmptyState title="未找到" />
+            <EmptyState title="Not found" />
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3 mb-5">
-                <Field label="来源模型" value={row.incoming_model} mono />
-                <Field label="目标模型" value={row.target_model} mono accent />
-                <Field label="状态码" value={String(row.status)} mono tone={statusTone(row.status)} />
-                <Field label="延迟" value={row.duration_ms ? fmtMs(row.duration_ms) : "—"} mono />
-                <Field label="输入 Token" value={String(row.input_tokens)} mono />
-                <Field label="输出 Token" value={String(row.output_tokens)} mono />
-                <Field label="缓存命中 Token" value={fmtNum(row.cached_input_tokens ?? 0)} mono />
-                <Field label="缓存写入 Token" value={fmtNum(row.cache_creation_input_tokens ?? 0)} mono />
+                <Field label="Source model" value={row.incoming_model} mono />
+                <Field label="Target model" value={row.target_model} mono accent />
+                <Field label="Status" value={String(row.status)} mono tone={statusTone(row.status)} />
+                <Field label="Latency" value={row.duration_ms ? fmtMs(row.duration_ms) : "—"} mono />
+                <Field label="Input tokens" value={String(row.input_tokens)} mono />
+                <Field label="Output tokens" value={String(row.output_tokens)} mono />
+                <Field label="Cache-hit tokens" value={fmtNum(row.cached_input_tokens ?? 0)} mono />
+                <Field label="Cache-write tokens" value={fmtNum(row.cache_creation_input_tokens ?? 0)} mono />
                 <Field
-                  label="缓存命中率"
+                  label="Cache hit rate"
                   value={`${cacheHitRate.toFixed(1)}%`}
                   mono
                   tone={cacheHitRate > 0 ? "text-accent-green" : "text-slate-200"}
                 />
-                <Field label="停止原因" value={row.stop_reason || "—"} mono />
-                <Field label="流式" value={row.stream ? "是" : "否"} mono />
+                <Field label="Stop reason" value={row.stop_reason || "—"} mono />
+                <Field label="Streaming" value={row.stream ? "Yes" : "No"} mono />
               </div>
 
               {row.error && (
@@ -221,15 +221,15 @@ function DetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
 
               <div className="flex gap-1 mb-3 bg-ink-900/60 p-1 rounded-xl w-fit">
                 <TabBtn active={tab === "req"} onClick={() => setTab("req")}>
-                  请求
+                  Request
                 </TabBtn>
                 <TabBtn active={tab === "resp"} onClick={() => setTab("resp")}>
-                  响应
+                  Response
                 </TabBtn>
               </div>
               <CodeBlock>
                 {prettyJson(tab === "req" ? row.req_body || "" : row.resp_body || "") ||
-                  "（空）"}
+                  "(empty)"}
               </CodeBlock>
             </>
           )}

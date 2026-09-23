@@ -77,7 +77,7 @@ export default function Models() {
   if (!cfg) {
     return (
       <div className="flex items-center justify-center py-24 text-slate-500 gap-2">
-        <Spinner /> 加载中…
+        <Spinner /> Loading…
       </div>
     );
   }
@@ -85,18 +85,18 @@ export default function Models() {
   return (
     <div className="animate-fade-in max-w-4xl">
       <PageHeader
-        title="模型路由"
-        desc="把来源的 Anthropic 模型名映射到 Zen 目标模型。按顺序匹配，首条命中生效；* 为兜底规则。"
+        title="Model Routes"
+        desc="Map incoming Anthropic model names to Zen target models. Rules match in order, first hit wins; * is the fallback rule."
         actions={
           <button onClick={save} disabled={!dirty || saving} className="btn-primary">
             {saving ? <Spinner /> : <SaveIcon />}
-            {dirty ? "保存" : "已保存"}
+            {dirty ? "Save" : "Saved"}
           </button>
         }
       />
 
       <Card className="mb-4">
-        <label className="label">默认模型（兜底目标）</label>
+        <label className="label">Default model (fallback target)</label>
         <div className="flex gap-2 flex-wrap items-center">
           <input
             className="input max-w-xs"
@@ -115,22 +115,22 @@ export default function Models() {
           <ConnectButton model={defaultModel} />
         </div>
         <p className="text-xs text-slate-500 mt-2">
-          当没有规则匹配时，以及 * 兜底行使用此模型。可自由填写——只要你的 Zen Key 能访问即可。
+          Used when no rule matches, and by the * fallback row. Free-form — anything your Zen key can access.
         </p>
       </Card>
 
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-slate-200">映射规则</h3>
+          <h3 className="text-sm font-semibold text-slate-200">Mapping rules</h3>
           <button onClick={addRow} className="btn-ghost !py-1.5 !text-xs">
-            + 新增规则
+            + Add rule
           </button>
         </div>
 
         <div className="space-y-2">
           <div className="grid grid-cols-[1fr_1fr_auto] gap-3 px-1 pb-1 text-[10px] uppercase tracking-wider text-slate-500">
-            <div>匹配（前缀或 *）</div>
-            <div>目标 Zen 模型</div>
+            <div>Match (prefix or *)</div>
+            <div>Target Zen model</div>
             <div />
           </div>
           {mappings.map((m, i) => (
@@ -151,7 +151,7 @@ export default function Models() {
               <button
                 onClick={() => removeRow(i)}
                 className="btn-ghost !px-2.5 !py-2 text-slate-500 hover:text-accent-red"
-                title="删除"
+                title="Delete"
               >
                 <TrashIcon />
               </button>
@@ -160,7 +160,7 @@ export default function Models() {
         </div>
 
         <div className="mt-5 pt-4 border-t border-white/[0.05]">
-          <div className="text-xs font-medium text-slate-400 mb-2">速查 · Zen 常用模型</div>
+          <div className="text-xs font-medium text-slate-400 mb-2">Quick ref · common Zen models</div>
           <div className="flex flex-wrap gap-2">
             {ZEN_SUGGESTIONS.map((m) => (
               <button
@@ -169,7 +169,7 @@ export default function Models() {
                   navigator.clipboard?.writeText(m);
                 }}
                 className="chip font-mono hover:border-accent/40 hover:text-accent-glow transition cursor-pointer"
-                title="点击复制"
+                title="Click to copy"
               >
                 {m}
               </button>
@@ -201,18 +201,18 @@ function ConnectButton({ model }: { model: string }) {
     <div className="flex items-center gap-2">
       <button onClick={run} disabled={busy} className="btn-ghost !py-2">
         {busy ? <Spinner /> : <BoltIcon />}
-        测试连通
+        Test connection
       </button>
       {res && (
         <div className="flex items-center gap-2">
           {res.ok ? (
             <Badge tone="green">
-              正常 · {fmtMs(res.elapsed_ms ?? res.upstreams?.[0]?.elapsed_ms)}
+              OK · {fmtMs(res.elapsed_ms ?? res.upstreams?.[0]?.elapsed_ms)}
               {(res.preview || res.upstreams?.[0]?.preview) ? ` · "${(res.preview || res.upstreams?.[0]?.preview || "").slice(0, 24)}"` : ""}
             </Badge>
           ) : (
             <Badge tone="red">
-              失败 · {res.error?.slice(0, 60)}
+              Failed · {res.error?.slice(0, 60)}
             </Badge>
           )}
         </div>

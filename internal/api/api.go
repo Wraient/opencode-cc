@@ -74,6 +74,8 @@ func New(cfg *config.Config, st *store.Store) *API {
 // Mount registers the API routes on mux under /api.
 func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", a.health)
+	// Documented liveness probe alias; must beat the "/" SPA fallback.
+	mux.HandleFunc("/healthz", a.health)
 	// Auth endpoints are intentionally unauthenticated.
 	mux.HandleFunc("/api/auth/login", a.handleLogin)
 	mux.HandleFunc("/api/auth/logout", a.handleLogout)
@@ -206,7 +208,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if token == "" || !subtleEqual(body.Password, token) {
 		// Fixed delay to slow brute-force attempts.
 		time.Sleep(500 * time.Millisecond)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "密码错误"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong password"})
 		return
 	}
 
@@ -316,6 +318,7 @@ func publicConfig(c *config.Config) map[string]any {
 		"prompt_cache_key_prefix":        c.PromptCacheKeyPrefix,
 		"prompt_cache_anthropic_control": c.PromptCacheAnthropicControl,
 		"prompt_cache_normalize":         c.PromptCacheNormalize,
+		"bridge_default_effort":          c.BridgeDefaultEffort,
 		"thinking_budget_mappings":       c.ThinkingBudgetMappings,
 	}
 }

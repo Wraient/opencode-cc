@@ -52,17 +52,24 @@ type OpenAIMessage struct {
 	Name             string              `json:"name,omitempty"`
 }
 
-// OpenAIContentPart is one part of a multi-part message (images / text).
+// OpenAIContentPart is one part of a multi-part message (text / image / video).
 type OpenAIContentPart struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
 	ImageURL *OpenAIImageURL `json:"image_url,omitempty"`
+	VideoURL *OpenAIVideoURL `json:"video_url,omitempty"`
 }
 
 // OpenAIImageURL wraps the url (data: or http(s):).
 type OpenAIImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// OpenAIVideoURL wraps a video url (data:video/mp4 or http(s):). Meta
+// muse-spark models accept video_url parts on Chat Completions.
+type OpenAIVideoURL struct {
+	URL string `json:"url"`
 }
 
 // OpenAIToolCall is a tool invocation produced by the model.
@@ -173,6 +180,9 @@ func (u OpenAIUsage) CachedPromptTokens() int {
 // OpenAIResponse is the body of a non-streaming completion.
 type OpenAIResponse struct {
 	ID      string         `json:"id"`
+	Object  string         `json:"object,omitempty"`
+	Created int64          `json:"created,omitempty"`
+	Model   string         `json:"model,omitempty"`
 	Choices []OpenAIChoice `json:"choices"`
 	Usage   OpenAIUsage    `json:"usage"`
 }

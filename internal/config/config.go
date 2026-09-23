@@ -126,8 +126,8 @@ type Config struct {
 	PromptCacheNormalize bool `json:"prompt_cache_normalize"`
 	// BridgeDefaultEffort is the Responses reasoning effort the Anthropic
 	// bridge uses when the client sends no thinking config. Empty means
-	// "minimal" (fast plain turns); set "xhigh" to always run hot. Unknown
-	// values fall back to minimal, never to the slow upstream default.
+	// "xhigh" (the hot default); set "minimal" for faster plain turns. Unknown
+	// values fall back to the model-safe default.
 	BridgeDefaultEffort string `json:"bridge_default_effort"`
 	// ThinkingBudgetMappings are evaluated by target model. They translate
 	// Anthropic thinking budget_tokens into provider-specific request fields.
@@ -162,6 +162,7 @@ type Patch struct {
 	PromptCacheKeyPrefix        *string                  `json:"prompt_cache_key_prefix"`
 	PromptCacheAnthropicControl *bool                    `json:"prompt_cache_anthropic_control"`
 	PromptCacheNormalize        *bool                    `json:"prompt_cache_normalize"`
+	BridgeDefaultEffort         *string                  `json:"bridge_default_effort"`
 	ThinkingBudgetMappings      *[]ThinkingBudgetMapping `json:"thinking_budget_mappings"`
 }
 
@@ -182,7 +183,7 @@ func Default() *Config {
 		PromptCacheKeyPrefix:        "opencode-cc",
 		PromptCacheAnthropicControl: true,
 		PromptCacheNormalize:        true,
-		BridgeDefaultEffort:         "minimal",
+		BridgeDefaultEffort:         "xhigh",
 		ThinkingBudgetMappings:      DefaultThinkingBudgetMappings(),
 	}
 }
@@ -432,6 +433,7 @@ func (c *Config) Snapshot() *Config {
 		PromptCacheKeyPrefix:        c.PromptCacheKeyPrefix,
 		PromptCacheAnthropicControl: c.PromptCacheAnthropicControl,
 		PromptCacheNormalize:        c.PromptCacheNormalize,
+		BridgeDefaultEffort:         c.BridgeDefaultEffort,
 	}
 	if c.ModelMappings != nil {
 		cp.ModelMappings = append([]ModelMapping(nil), c.ModelMappings...)
@@ -640,6 +642,9 @@ func (c *Config) ApplyPatch(src *Patch) {
 	}
 	if src.PromptCacheNormalize != nil {
 		c.PromptCacheNormalize = *src.PromptCacheNormalize
+	}
+	if src.BridgeDefaultEffort != nil {
+		c.BridgeDefaultEffort = strings.ToLower(strings.TrimSpace(*src.BridgeDefaultEffort))
 	}
 	if src.ThinkingBudgetMappings != nil {
 		c.ThinkingBudgetMappings = append([]ThinkingBudgetMapping(nil), (*src.ThinkingBudgetMappings)...)

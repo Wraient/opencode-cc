@@ -154,7 +154,10 @@ type AnthropicContent struct {
 	// text
 	Text string `json:"text,omitempty"`
 
-	// image
+	// image / video
+	// Source carries the media payload for "image" blocks and for the
+	// proxy-specific "video" block (base64 mp4 or remote URL). The struct
+	// name is historical; it is media-generic.
 	Source *AnthropicImageSource `json:"source,omitempty"`
 
 	// tool_use

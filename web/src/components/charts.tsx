@@ -47,8 +47,8 @@ export function RequestsAreaChart({ data }: { data: HourPoint[] }) {
         <XAxis dataKey="label" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={24} />
         <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} width={40} />
         <Tooltip contentStyle={tooltipStyle} labelStyle={labelStyle} cursor={{ stroke: "rgba(255,255,255,0.1)" }} />
-        <Area type="monotone" dataKey="requests" name="请求数" stroke="#7c5cff" strokeWidth={2} fill="url(#gReq)" />
-        <Area type="monotone" dataKey="errors" name="错误数" stroke="#f87171" strokeWidth={2} fill="url(#gErr)" />
+        <Area type="monotone" dataKey="requests" name="Requests" stroke="#7c5cff" strokeWidth={2} fill="url(#gReq)" />
+        <Area type="monotone" dataKey="errors" name="Errors" stroke="#f87171" strokeWidth={2} fill="url(#gErr)" />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -79,8 +79,8 @@ export function TokensAreaChart({ data }: { data: HourPoint[] }) {
         <XAxis dataKey="label" tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={24} />
         <YAxis tick={{ fill: "#64748b", fontSize: 11 }} axisLine={false} tickLine={false} width={48} tickFormatter={fmtNum} />
         <Tooltip contentStyle={tooltipStyle} labelStyle={labelStyle} cursor={{ stroke: "rgba(255,255,255,0.1)" }} formatter={(v: number) => fmtNum(v)} />
-        <Area type="monotone" dataKey="input_tokens" name="输入" stroke="#22d3ee" strokeWidth={2} fill="url(#gIn)" />
-        <Area type="monotone" dataKey="output_tokens" name="输出" stroke="#34d399" strokeWidth={2} fill="url(#gOut)" />
+        <Area type="monotone" dataKey="input_tokens" name="Input" stroke="#22d3ee" strokeWidth={2} fill="url(#gIn)" />
+        <Area type="monotone" dataKey="output_tokens" name="Output" stroke="#34d399" strokeWidth={2} fill="url(#gOut)" />
       </AreaChart>
     </ResponsiveContainer>
   );
