@@ -145,6 +145,156 @@ func TestAnthropicViaResponsesNonStream(t *testing.T) {
 	}
 }
 
+// flakyResponsesZen answers the first request text-only (the weak-model
+// flake) and all later requests with a function call. hits counts upstream
+// POSTs. Set streamFrames false for the non-streaming (aggregated) lane.
+func flakyResponsesZen(t *testing.T, streamFrames bool, hits *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("unexpected upstream path: %s", r.URL.Path)
+		}
+		*hits++
+		// The free-model lane always forces SSE upstream, so both the
+		// streaming and aggregated downstream relays read event streams.
+		w.Header().Set("Content-Type", "text/event-stream")
+		frames := textOnlyFrames()
+		if *hits > 1 {
+			frames = toolFrames()
+		}
+		for _, f := range frames {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", f[0], f[1])
+		}
+	}))
+}
+
+func textOnlyFrames() [][2]string {
+	return [][2]string{
+		{"response.output_text.delta", `{"type":"response.output_text.delta","item_id":"a","delta":"a short note"}`},
+		{"response.completed", `{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":9}}}`},
+	}
+}
+
+func toolFrames() [][2]string {
+	completed := `{"type":"response.completed","response":{"status":"completed",` +
+		`"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant",` +
+		`"content":[{"type":"output_text","text":"calling it","annotations":[]}]},` +
+		`{"id":"fc_9","type":"function_call","status":"completed",` +
+		`"call_id":"call_9","name":"get_time","arguments":"{}"}],` +
+		`"usage":{"input_tokens":10,"output_tokens":8}}}`
+	return [][2]string{
+		{"response.output_text.delta", `{"type":"response.output_text.delta","item_id":"a","delta":"calling it"}`},
+		{"response.output_item.added", `{"type":"response.output_item.added","item_id":"b","item":{"id":"fc_9","type":"function_call","call_id":"call_9","name":"get_time"}}`},
+		{"response.output_item.done", `{"type":"response.output_item.done","item_id":"b","item":{"id":"fc_9","type":"function_call","call_id":"call_9","name":"get_time","arguments":"{}"}}`},
+		{"response.completed", completed},
+	}
+}
+
+func TestBridgeToollessResampleRescuesStream(t *testing.T) {
+	hits := 0
+	zen := flakyResponsesZen(t, true, &hits)
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	srv.cfg.BridgeToollessResample = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, true)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, want 2 (original + one resample)", hits)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"get_time"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rescued stream missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestBridgeToollessResampleDisabled(t *testing.T) {
+	hits := 0
+	zen := flakyResponsesZen(t, true, &hits)
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	// flag left off: faithful relay, single upstream hit.
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, true)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (no resample when disabled)", hits)
+	}
+	if !strings.Contains(rec.Body.String(), `"stop_reason":"end_turn"`) {
+		t.Errorf("want faithful end_turn:\n%s", rec.Body.String())
+	}
+}
+
+func TestBridgeToollessResampleGivesUpWhenStillToolless(t *testing.T) {
+	hits := 0
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, f := range textOnlyFrames() {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", f[0], f[1])
+		}
+	}))
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	srv.cfg.BridgeToollessResample = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, true)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, want 2 (original + one resample, then give up)", hits)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"stop_reason":"end_turn"`) {
+		t.Errorf("want end_turn after failed resample:\n%s", body)
+	}
+	if strings.Contains(body, `"type":"tool_use"`) {
+		t.Errorf("no tool_use expected:\n%s", body)
+	}
+}
+
+func TestBridgeToollessResampleRescuesAggregated(t *testing.T) {
+	hits := 0
+	zen := flakyResponsesZen(t, false, &hits)
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	srv.cfg.BridgeToollessResample = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, false)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, want 2 (original + one resample)", hits)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["stop_reason"] != "tool_use" {
+		t.Errorf("stop_reason = %v, want tool_use", resp["stop_reason"])
+	}
+}
+
 func TestAnthropicViaResponsesStream(t *testing.T) {
 	var gotBody []byte
 	zen := mockResponsesZen(t, true, &gotBody)

@@ -167,3 +167,276 @@ func TestResponsesStreamDropsUndeclaredToolAndSkipsPing(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesStreamResolvesMarkerAndNamespacedTools(t *testing.T) {
+	// Regression test for the agent-loop stall: muse-spark calls the injected
+	// free-tier marker "shell" (presented upstream as "default.shell") instead
+	// of the client's declared "Bash". The call must be rewritten to the
+	// declared name with stop_reason tool_use — never silently dropped into a
+	// text-only end_turn (which forces the user to type "continue").
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Running it now."}`},
+		{"response.output_item.added", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"default.shell"}}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"command\":\"echo hi\"}"}}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":3}}}}`},
+	}
+	events := runResponsesStream(t, []string{"Bash"}, frames)
+	var toolName, stop string
+	for _, e := range events {
+		if e.Type == "content_block_start" && e.ContentBlock["type"] == "tool_use" {
+			toolName, _ = e.ContentBlock["name"].(string)
+		}
+		if e.Type == "message_delta" {
+			stop, _ = e.Delta["stop_reason"].(string)
+		}
+	}
+	if toolName != "Bash" {
+		t.Errorf("marker tool rewritten to: %q, want %q", toolName, "Bash")
+	}
+	if stop != "tool_use" {
+		t.Errorf("stop_reason: %q, want %q", stop, "tool_use")
+	}
+}
+
+func TestResponsesStreamStillDropsHallucinatedTools(t *testing.T) {
+	// Genuinely undeclared tools must still be dropped (existing behavior),
+	// and now recorded for diagnostics.
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash"})
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Hi"}`},
+		{"response.output_item.added", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"evil_tool"}}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{}"}`},
+		{"response.output_item.done", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"evil_tool","arguments":"{}"}}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if strings.Contains(buf.String(), "tool_use") {
+		t.Errorf("hallucinated tool must be dropped:\n%s", buf.String())
+	}
+	if got := conv.DroppedCalls(); len(got) != 1 || got[0].Name != "evil_tool" {
+		t.Errorf("DroppedCalls() = %v, want [evil_tool]", got)
+	} else {
+		d := got[0]
+		if !d.SawAdded || !d.SawDone || d.AddedType != "function_call" {
+			t.Errorf("dropped call shape = %+v, want added+done function_call", d)
+		}
+	}
+	if got := conv.StopReason(); got != "end_turn" {
+		t.Errorf("StopReason() = %q, want end_turn", got)
+	}
+}
+
+func TestResponsesStreamDoneArgsReplaceDeltas(t *testing.T) {
+	// output_item.done carries the complete arguments while deltas streamed
+	// the same content as fragments: the emitted input must be the single
+	// JSON object, never doubled ("{...}{...}"), or clients fail to parse it.
+	events := runResponsesStream(t, []string{"Bash"}, [][2]string{
+		{"response.output_item.added", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"Bash"}}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":"}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"Bash","arguments":"{\"command\":\"echo hi\"}"}}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":3}}}}`},
+	})
+	var partial string
+	for _, e := range events {
+		if e.Type == "content_block_delta" {
+			if s, ok := e.Delta["partial_json"].(string); ok {
+				partial = s
+			}
+		}
+	}
+	if partial != `{"command":"echo hi"}` {
+		t.Errorf("input_json_delta = %q, want single object", partial)
+	}
+}
+
+func TestResponsesStreamNamelessDropShape(t *testing.T) {
+	// The live stall shape: args stream in but the name never arrives in any
+	// frame. With two declared tools and no schemas the call is ambiguous:
+	// dropped (no name to emit) and recorded with its shape so the server
+	// log shows WHY (added/done tracking + args head).
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash", "Read"})
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Running it."}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b"}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if strings.Contains(buf.String(), "tool_use") {
+		t.Errorf("ambiguous nameless tool must be dropped:\n%s", buf.String())
+	}
+	got := conv.DroppedCalls()
+	if len(got) != 1 {
+		t.Fatalf("DroppedCalls() = %v, want 1 entry", got)
+	}
+	d := got[0]
+	if d.Name != "" {
+		t.Errorf("dropped name = %q, want empty", d.Name)
+	}
+	if d.SawAdded {
+		t.Errorf("saw_added = true, want false (no added frame sent)")
+	}
+	if d.ArgsLen == 0 || d.ArgsHead == "" {
+		t.Errorf("args not recorded: %+v", d)
+	}
+	if got := conv.StopReason(); got != "end_turn" {
+		t.Errorf("StopReason() = %q, want end_turn", got)
+	}
+}
+
+func TestResponsesStreamNamelessRecoveredBySchema(t *testing.T) {
+	// Same wire shape, but the args uniquely match one declared schema:
+	// the call is attributed instead of stalling the loop.
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash", "Read"})
+	conv.SetDeclaredSchemas([]AnthropicTool{
+		{Name: "Bash", InputSchema: jsonRawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`)},
+		{Name: "Read", InputSchema: jsonRawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`)},
+	})
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Running it."}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b"}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	events := collectAnthropicEvents(t, &buf)
+	var toolName, stop string
+	for _, e := range events {
+		if e.Type == "content_block_start" && e.ContentBlock["type"] == "tool_use" {
+			toolName, _ = e.ContentBlock["name"].(string)
+		}
+		if e.Type == "message_delta" {
+			stop, _ = e.Delta["stop_reason"].(string)
+		}
+	}
+	if toolName != "Bash" {
+		t.Errorf("recovered tool = %q, want Bash", toolName)
+	}
+	if stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
+	}
+	if got := conv.RecoveredCalls(); got != 1 {
+		t.Errorf("RecoveredCalls() = %d, want 1", got)
+	}
+	if got := conv.DroppedCalls(); len(got) != 0 {
+		t.Errorf("DroppedCalls() = %v, want none", got)
+	}
+}
+
+func TestResponsesStreamSkipsReasoningItemsSilently(t *testing.T) {
+	// A "reasoning" output item is never a tool candidate: no tool_use, no
+	// drop record, still end_turn.
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash"})
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Hi"}`},
+		{"response.output_item.added", `{"item_id":"r","item":{"id":"rs1","type":"reasoning"}}`},
+		{"response.output_item.done", `{"item_id":"r","item":{"id":"rs1","type":"reasoning"}}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if strings.Contains(buf.String(), "tool_use") {
+		t.Errorf("reasoning item must not become a tool:\n%s", buf.String())
+	}
+	if got := conv.DroppedCalls(); len(got) != 0 {
+		t.Errorf("DroppedCalls() = %v, want none", got)
+	}
+}
+
+func TestResponsesStreamTopLevelFallbacks(t *testing.T) {
+	// Zen flavor: name/call_id/arguments ride on the frame top level rather
+	// than nested under item. The call must still be emitted whole.
+	events := runResponsesStream(t, []string{"Bash"}, [][2]string{
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":"}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","name":"Bash","delta":"\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b","name":"Bash","call_id":"call_9","arguments":"{\"command\":\"echo hi\"}"}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	})
+	var toolName, callID, stop string
+	for _, e := range events {
+		if e.Type == "content_block_start" && e.ContentBlock["type"] == "tool_use" {
+			toolName, _ = e.ContentBlock["name"].(string)
+			callID, _ = e.ContentBlock["id"].(string)
+		}
+		if e.Type == "message_delta" {
+			stop, _ = e.Delta["stop_reason"].(string)
+		}
+	}
+	if toolName != "Bash" || callID != "call_9" {
+		t.Errorf("tool = %q id = %q, want Bash call_9", toolName, callID)
+	}
+	if stop != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop)
+	}
+}
+
+func TestResponsesStreamBareDoneStaysSilent(t *testing.T) {
+	// A done marker for an item that never carried anything loses nothing.
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash"})
+	frames := [][2]string{
+		{"response.output_text.delta", `{"item_id":"a","delta":"Hi"}`},
+		{"response.output_item.done", `{"item_id":"zzz"}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := conv.DroppedCalls(); len(got) != 0 {
+		t.Errorf("DroppedCalls() = %v, want none", got)
+	}
+}
+
+func TestResponsesStreamNontoolWithArgsAlarms(t *testing.T) {
+	// A non-function item that accumulated call arguments is a real call
+	// hiding behind another item type: must be recorded, not skipped.
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	conv := NewResponsesToAnthropicStreamer(bw, "m")
+	conv.RestrictTools([]string{"Bash"})
+	frames := [][2]string{
+		{"response.output_item.added", `{"item_id":"b","item":{"id":"x1","type":"mcp_call"}}`},
+		{"response.function_call_arguments.delta", `{"item_id":"b","delta":"{\"command\":\"echo hi\"}"}`},
+		{"response.output_item.done", `{"item_id":"b","item":{"id":"x1","type":"mcp_call"}}`},
+		{"response.completed", `{"response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}}`},
+	}
+	feedResponsesStream(t, conv, frames)
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	got := conv.DroppedCalls()
+	if len(got) != 1 {
+		t.Fatalf("DroppedCalls() = %v, want 1 entry", got)
+	}
+	if got[0].AddedType != "mcp_call" || got[0].ArgsLen == 0 {
+		t.Errorf("drop shape = %+v, want mcp_call with args", got[0])
+	}
+}

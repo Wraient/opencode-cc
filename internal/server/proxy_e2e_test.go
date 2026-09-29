@@ -17,6 +17,169 @@ import (
 	"github.com/Kiowx/opencode-cc/internal/store"
 )
 
+// flakyChatZen answers the first POST with an empty stream (the observed
+// nemotron shape: immediate [DONE], no chunks) and later POSTs with a
+// text + tool_call stream. hits counts upstream POSTs.
+func flakyChatZen(t *testing.T, hits *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
+			t.Errorf("unexpected upstream path: %s", r.URL.Path)
+		}
+		*hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		if *hits > 1 {
+			for _, ch := range []string{
+				`{"id":"c2","choices":[{"index":0,"delta":{"content":"on it"},"finish_reason":null}]}`,
+				`{"id":"c2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_c","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"echo hi\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			} {
+				fmt.Fprintf(w, "data: %s\n\n", ch)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+}
+
+func chatLoopBody(t *testing.T) []byte {
+	t.Helper()
+	req := map[string]any{
+		"model":      "client-model",
+		"max_tokens": 128,
+		"stream":     true,
+		"messages":   []map[string]any{{"role": "user", "content": "echo hi via Bash"}},
+		"tools": []map[string]any{{
+			"name": "Bash", "description": "run shell",
+			"input_schema": map[string]any{"type": "object"},
+		}},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return body
+}
+
+func TestChatToollessResampleRescuesEmptyStream(t *testing.T) {
+	hits := 0
+	zen := flakyChatZen(t, &hits)
+	defer zen.Close()
+	cfg := config.Default()
+	cfg.UpstreamBase = strings.TrimRight(zen.URL, "/")
+	cfg.ZenAPIKey = "test-key"
+	cfg.NativeAnthropic = false
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "glm-4.6"}}
+	cfg.BridgeToollessResample = true
+	srv, _ := newTestServerWithCfg(t, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(chatLoopBody(t)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, want 2 (empty stream + one resample)", hits)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"Bash"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rescued stream missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestChatToollessResampleDisabled(t *testing.T) {
+	hits := 0
+	zen := flakyChatZen(t, &hits)
+	defer zen.Close()
+	srv, _ := newTestServer(t, zen.URL)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(chatLoopBody(t)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (no resample when disabled)", hits)
+	}
+	if !strings.Contains(rec.Body.String(), `"stop_reason":"end_turn"`) {
+		t.Errorf("want faithful end_turn:\n%s", rec.Body.String())
+	}
+}
+
+// TestChatAbortedStreamResample covers the third stall shape: upstream dies
+// mid-stream with no tool fragments yet. The guard re-POSTs once; the
+// rescued sample's tools land in the same message.
+func TestChatAbortedStreamResample(t *testing.T) {
+	hits := 0
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		if hits == 1 {
+			// Abort mid-stream: one text chunk, then kill the connection.
+			fmt.Fprint(w, "data: {\"id\":\"c9\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"part\"},\"finish_reason\":null}]}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, herr := hj.Hijack(); herr == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+		for _, ch := range []string{
+			`{"id":"c9","choices":[{"index":0,"delta":{"content":"retry"},"finish_reason":null}]}`,
+			`{"id":"c9","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_r","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"echo hi\"}"}}]},"finish_reason":null}]}`,
+			`{"id":"c9","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", ch)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer zen.Close()
+	cfg := config.Default()
+	cfg.UpstreamBase = strings.TrimRight(zen.URL, "/")
+	cfg.ZenAPIKey = "test-key"
+	cfg.NativeAnthropic = false
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "glm-4.6"}}
+	cfg.BridgeToollessResample = true
+	srv, _ := newTestServerWithCfg(t, cfg)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(chatLoopBody(t)))
+	srv.Proxy().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("upstream hits = %d, want 2 (aborted stream + one resample)", hits)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"Bash"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rescued stream missing %q:\n%s", want, body)
+		}
+	}
+}
+
 // mockZen returns a test server that pretends to be Zen's /v1/chat/completions.
 // It supports both non-streaming and streaming, and echoes what it received so
 // the test can assert the converted OpenAI payload.

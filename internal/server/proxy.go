@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -148,8 +149,17 @@ func (s *Server) Proxy() http.HandlerFunc {
 			return
 		}
 
+		// chatResample re-POSTs the identical upstream Chat request for the
+		// toolless-resample guard (same body, same headers).
+		chatResample := func() (*http.Response, error) {
+			if err := r.Context().Err(); err != nil {
+				return nil, err
+			}
+			return doUpstreamWithRetry(httpClient, upReq, upBody)
+		}
+
 		if areq.Stream {
-			s.handleStreamResponse(w, resp, r, areq.Model, targetModel, body, start)
+			s.handleStreamResponse(w, resp, r, areq.Model, targetModel, body, start, chatResample, s.cfg.BridgeToollessResample)
 		} else if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
 			(strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") || resp.Header.Get("Content-Type") == "") {
 			s.handleAggregatedChatResponse(w, resp, r, areq.Model, targetModel, body, start)
@@ -440,7 +450,10 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, resp *http.Respo
 		return
 	}
 	aresp := proxy.ConvertResponse(oresp, inModel)
-	filterUndeclaredToolUses(aresp, areqToolsFromBody(reqBody))
+	if removed := filterUndeclaredToolUses(aresp, areqToolsFromBody(reqBody)); len(removed) > 0 {
+		log.Printf("opencode-cc: filtered %d undeclared tool_use block(s) name=%.300q model=%s target=%s (non-streaming; client must 'continue')",
+			len(removed), strings.Join(removed, ","), inModel, target)
+	}
 	writeJSON(w, http.StatusOK, aresp)
 
 	// Log a success row.
@@ -473,7 +486,10 @@ func (s *Server) handleAggregatedChatResponse(w http.ResponseWriter, resp *http.
 		return
 	}
 	aresp := proxy.ConvertResponse(chat, inModel)
-	filterUndeclaredToolUses(aresp, areqToolsFromBody(reqBody))
+	if removed := filterUndeclaredToolUses(aresp, areqToolsFromBody(reqBody)); len(removed) > 0 {
+		log.Printf("opencode-cc: filtered %d undeclared tool_use block(s) name=%.300q model=%s target=%s (aggregated; client must 'continue')",
+			len(removed), strings.Join(removed, ","), inModel, target)
+	}
 	writeJSON(w, http.StatusOK, aresp)
 	s.logSuccessWithCache(r.Context(), r, inModel, target, false, http.StatusOK,
 		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
@@ -483,7 +499,7 @@ func (s *Server) handleAggregatedChatResponse(w http.ResponseWriter, resp *http.
 
 // handleStreamResponse proxies the SSE stream, converting each OpenAI chunk to
 // Anthropic events. It flushes continuously so the client sees real-time data.
-func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response, r *http.Request, inModel, target string, reqBody []byte, start time.Time) {
+func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response, r *http.Request, inModel, target string, reqBody []byte, start time.Time, resample func() (*http.Response, error), resampleEnabled bool) {
 	defer resp.Body.Close()
 
 	flusher, ok := w.(http.Flusher)
@@ -515,6 +531,8 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 	// buffer); push them to the client now, before the first upstream chunk.
 	flusher.Flush()
 	conv.RestrictTools(anthropicToolNamesFromBody(reqBody))
+	conv.SetDeclaredSchemas(areqToolsFromBody(reqBody))
+	declaredTools := anthropicToolNamesFromBody(reqBody)
 
 	// Read the upstream body, transparently decompressing gzip if needed.
 	bodyReader := io.Reader(resp.Body)
@@ -526,7 +544,7 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 		}
 	}
 
-	streamErr := proxy.ScanOpenAIStream(bodyReader, func(chunk *proxy.OpenAIStreamChunk) error {
+	scanRes, streamErr := proxy.ScanOpenAIStreamWithStatus(bodyReader, func(chunk *proxy.OpenAIStreamChunk) error {
 		if chunk.Usage != nil {
 			inputTok = chunk.Usage.PromptTokens
 			outputTok = chunk.Usage.CompletionTokens
@@ -541,24 +559,180 @@ func (s *Server) handleStreamResponse(w http.ResponseWriter, resp *http.Response
 		flusher.Flush()
 		return nil
 	})
+	malformed := scanRes.Malformed
 
 	// Finalize the stream: emit content_block_stop (if open) + message_delta
 	// (carrying usage) + message_stop. If the upstream errored mid-stream,
-	// surface it as an error event first.
+	// first try the aborted-stream resample (strict guards: no tool content
+	// may exist yet); only then surface the error event.
 	if streamErr != nil && streamErr.Error() != "EOF" {
-		_ = conv.EmitError("api_error", "upstream stream error: "+streamErr.Error())
-		stopReason = "stream_error"
-		_ = conv.Finalize(stopReason)
-	} else {
-		_ = conv.Finalize("end_turn")
-		stopReason = "end_turn"
+		if s.maybeResampleAbortedChatStream(r, flusher, conv, resample, resampleEnabled, declaredTools, &inputTok, &outputTok, &cachedInputTok, &malformed, streamErr, inModel, target) {
+			// Rescued: fall through to Finalize, which emits tool_use.
+		} else {
+			_ = conv.EmitError("api_error", "upstream stream error: "+streamErr.Error())
+			stopReason = "stream_error"
+			_ = conv.Finalize(stopReason)
+			_ = conv.Flush()
+			flusher.Flush()
+			s.logFailed(r.Context(), r, inModel, target, true, http.StatusBadGateway, streamErr.Error(), reqBody, time.Since(start))
+			return
+		}
 	}
+	s.maybeResampleToollessChatStream(r, flusher, conv, resample, resampleEnabled, declaredTools, &inputTok, &outputTok, &cachedInputTok, &malformed, inModel, target)
+	_ = conv.Finalize("end_turn")
+	stopReason = conv.StopReason()
 	_ = conv.Flush()
 	flusher.Flush()
+
+	if renamed := conv.RenamedToolCalls(); renamed > 0 {
+		log.Printf("opencode-cc: resolved %d upstream tool call(s) to declared names model=%s target=%s",
+			renamed, inModel, target)
+	}
+	if recovered := conv.RecoveredCalls(); recovered > 0 {
+		log.Printf("opencode-cc: recovered %d nameless upstream tool call(s) by schema model=%s target=%s",
+			recovered, inModel, target)
+	}
+	for _, d := range conv.DroppedCalls() {
+		log.Printf("opencode-cc: dropped upstream tool call reason=%q name=%q call_id=%q args_len=%d args=%.160q declared=%.300q model=%s target=%s upstream_finish=%q (client must 'continue')",
+			d.Reason, d.Name, d.CallID, d.ArgsLen, d.ArgsHead, d.Declared, inModel, target, conv.UpstreamFinish())
+	}
+	if stopReason == "end_turn" && len(conv.DroppedCalls()) == 0 && outputTok < 200 {
+		// Tool-less short end_turn: log the text head so the next stall
+		// carries its own evidence (promise narration vs legit turn end).
+		// malformed counts upstream data lines that failed to parse and
+		// were skipped: a corrupt tool-call chunk with a tool_calls finish
+		// looks exactly like a stall, so the count is logged, never silent.
+		log.Printf("opencode-cc: short end_turn out=%d in=%d upstream_finish=%q malformed=%d text=%.400q model=%s target=%s",
+			outputTok, inputTok, conv.UpstreamFinish(), malformed, conv.TextHead(), inModel, target)
+	}
 
 	// Log.
 	s.logSuccessWithCache(r.Context(), r, inModel, target, true, http.StatusOK,
 		inputTok, outputTok, cachedInputTok, 0, stopReason, string(reqBody), "[streamed]", time.Since(start))
+}
+
+// maybeResampleToollessChatStream retries a completed tool-less Chat turn
+// once against the identical upstream request, scanning the second sample
+// into the same still-open converter (buffered tools emit once at Finalize,
+// so ordering stays valid). Returns true only on rescue. Must run before
+// Finalize. A resample that ends length-truncated without tools can
+// relabel the stop max_tokens; that mislabel is benign (the client
+// continues itself) and is noted here so it never confuses forensics.
+func (s *Server) maybeResampleToollessChatStream(
+	r *http.Request,
+	flusher http.Flusher,
+	conv *proxy.StreamConverter,
+	resample func() (*http.Response, error),
+	enabled bool,
+	declaredTools []string,
+	inputTok, outputTok, cachedInputTok *int,
+	malformed *int,
+	inModel, target string,
+) bool {
+	finish := conv.PendingFinish()
+	upstreamStatus := finish
+	if finish == "" || finish == "stop" {
+		upstreamStatus = ""
+	}
+	do, verdict := proxy.ShouldResampleToolless(enabled, len(declaredTools),
+		"end_turn", conv.HasToolUse(), len(conv.DroppedCalls()),
+		*outputTok, upstreamStatus)
+	if !do {
+		return false
+	}
+	log.Printf("opencode-cc: toolless resample [chat] (%s) out=%d upstream_finish=%q model=%s target=%s",
+		verdict, *outputTok, finish, inModel, target)
+	return s.runChatResample(r, flusher, conv, resample, inputTok, outputTok, cachedInputTok, malformed, inModel, target)
+}
+
+// maybeResampleAbortedChatStream retries a mid-stream aborted Chat turn
+// once, but ONLY when the aborted sample left no tool fragments behind
+// (no emitted calls, nothing buffered, no drops). Appending a second
+// sample onto partial fragments could duplicate or corrupt calls, so any
+// tool content at all disables this path and the error surfaces as before.
+func (s *Server) maybeResampleAbortedChatStream(
+	r *http.Request,
+	flusher http.Flusher,
+	conv *proxy.StreamConverter,
+	resample func() (*http.Response, error),
+	enabled bool,
+	declaredTools []string,
+	inputTok, outputTok, cachedInputTok *int,
+	malformed *int,
+	scanErr error,
+	inModel, target string,
+) bool {
+	if !enabled || len(declaredTools) == 0 || conv.HasToolUse() || conv.HasBufferedTools() ||
+		len(conv.DroppedCalls()) != 0 || *outputTok > proxy.ToollessResampleMaxOutputTokens {
+		return false
+	}
+	log.Printf("opencode-cc: aborted-stream resample [chat] (%v) out=%d model=%s target=%s",
+		scanErr, *outputTok, inModel, target)
+	return s.runChatResample(r, flusher, conv, resample, inputTok, outputTok, cachedInputTok, malformed, inModel, target)
+}
+
+// runChatResample POSTs once via resample and scans the result into the
+// still-open converter. True only when the sample yields tool calls.
+func (s *Server) runChatResample(
+	r *http.Request,
+	flusher http.Flusher,
+	conv *proxy.StreamConverter,
+	resample func() (*http.Response, error),
+	inputTok, outputTok, cachedInputTok *int,
+	malformed *int,
+	inModel, target string,
+) bool {
+	r2, err := resample()
+	if err != nil {
+		log.Printf("opencode-cc: toolless resample [chat] failed: %v model=%s target=%s",
+			err, inModel, target)
+		return false
+	}
+	defer r2.Body.Close()
+	if r2.StatusCode >= http.StatusBadRequest {
+		_, _ = io.Copy(io.Discard, io.LimitReader(r2.Body, 64*1024))
+		log.Printf("opencode-cc: toolless resample [chat] upstream %d model=%s target=%s",
+			r2.StatusCode, inModel, target)
+		return false
+	}
+	reader := io.Reader(r2.Body)
+	if strings.EqualFold(r2.Header.Get("Content-Encoding"), "gzip") {
+		gz, gerr := gzip.NewReader(r2.Body)
+		if gerr != nil {
+			log.Printf("opencode-cc: toolless resample [chat] undecodable model=%s target=%s",
+				inModel, target)
+			return false
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	scanRes, scanErr := proxy.ScanOpenAIStreamWithStatus(reader, func(chunk *proxy.OpenAIStreamChunk) error {
+		if chunk.Usage != nil {
+			*inputTok = chunk.Usage.PromptTokens
+			*outputTok = chunk.Usage.CompletionTokens
+			*cachedInputTok = chunk.Usage.CachedPromptTokens()
+		}
+		if herr := conv.HandleChunk(chunk); herr != nil {
+			return herr
+		}
+		flusher.Flush()
+		return nil
+	})
+	*malformed += scanRes.Malformed
+	if scanErr != nil && scanErr.Error() != "EOF" {
+		log.Printf("opencode-cc: toolless resample [chat] stream error: %v model=%s target=%s",
+			scanErr, inModel, target)
+		return false
+	}
+	flusher.Flush()
+	if !conv.HasToolUse() {
+		log.Printf("opencode-cc: toolless resample [chat] still toolless model=%s target=%s",
+			inModel, target)
+		return false
+	}
+	log.Printf("opencode-cc: toolless resample [chat] RESCUED model=%s target=%s",
+		inModel, target)
+	return true
 }
 
 // CountTokens handles POST /v1/messages/count_tokens with a rough estimate
@@ -726,21 +900,25 @@ func anthropicToolNamesFromBody(body []byte) []string {
 	return names
 }
 
-func filterUndeclaredToolUses(resp *proxy.AnthropicResponse, tools []proxy.AnthropicTool) {
+func filterUndeclaredToolUses(resp *proxy.AnthropicResponse, tools []proxy.AnthropicTool) []string {
 	if resp == nil {
-		return
+		return nil
 	}
-	allowed := make(map[string]string, len(tools))
+	declared := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		allowed[tool.Name] = tool.Name
+		declared = append(declared, tool.Name)
 	}
 	filtered := resp.Content[:0]
-	removed := false
+	var removed []string
 	for _, block := range resp.Content {
 		if block.Type == "tool_use" {
-			name, ok := canonicalDeclaredToolName(block.Name, allowed)
+			// Same resolution as the streaming paths: OpenCode-namespaced
+			// ("default.Bash") and free-tier marker ("shell"/"read") names
+			// rewrite to the declared equivalent instead of stalling the
+			// agent loop with a text-only end_turn.
+			name, ok := proxy.ResolveDeclaredToolName(block.Name, declared)
 			if !ok {
-				removed = true
+				removed = append(removed, block.Name)
 				continue
 			}
 			block.Name = name
@@ -748,22 +926,11 @@ func filterUndeclaredToolUses(resp *proxy.AnthropicResponse, tools []proxy.Anthr
 		filtered = append(filtered, block)
 	}
 	resp.Content = filtered
-	if removed && resp.StopReason != nil && *resp.StopReason == "tool_use" {
+	if len(removed) > 0 && resp.StopReason != nil && *resp.StopReason == "tool_use" {
 		stop := "end_turn"
 		resp.StopReason = &stop
 	}
-}
-
-func canonicalDeclaredToolName(name string, allowed map[string]string) (string, bool) {
-	if canonical, ok := allowed[name]; ok {
-		return canonical, true
-	}
-	for allowedName, canonical := range allowed {
-		if strings.EqualFold(allowedName, name) {
-			return canonical, true
-		}
-	}
-	return "", false
+	return removed
 }
 
 // extractOpenAIError pulls the human message out of an OpenAI error envelope.

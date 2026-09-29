@@ -96,7 +96,10 @@ func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel string, o
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
-	// Zen Responses currently accepts only tool_choice "auto".
+	// Zen Responses accepts only tool_choice "auto" (verified live
+	// 2026-09-28: "required" and named function choice both 400 upstream),
+	// so forced client choices (any/tool) cannot be forwarded — the server
+	// layer logs forced-tool turns that return tool-less instead.
 	body["tool_choice"] = "auto"
 	return jsonMarshal(body)
 }

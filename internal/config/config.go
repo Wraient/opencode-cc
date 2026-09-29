@@ -129,6 +129,14 @@ type Config struct {
 	// "xhigh" (the hot default); set "minimal" for faster plain turns. Unknown
 	// values fall back to the model-safe default.
 	BridgeDefaultEffort string `json:"bridge_default_effort"`
+	// BridgeToollessResample makes the Responses bridge re-POST once when a
+	// completed turn declares tools but returns none (weak-model sampler
+	// flake: narration instead of a tool call). The resample is identical
+	// and only fires on short (<=500 output tokens) completed turns; if it
+	// yields tools they are appended, otherwise the original stands. This
+	// trades one extra upstream call on tool-less turns for agent loops
+	// that stall on text-only end_turns. Default false.
+	BridgeToollessResample bool `json:"bridge_toolless_resample"`
 	// ThinkingBudgetMappings are evaluated by target model. They translate
 	// Anthropic thinking budget_tokens into provider-specific request fields.
 	ThinkingBudgetMappings []ThinkingBudgetMapping `json:"thinking_budget_mappings"`
@@ -163,6 +171,7 @@ type Patch struct {
 	PromptCacheAnthropicControl *bool                    `json:"prompt_cache_anthropic_control"`
 	PromptCacheNormalize        *bool                    `json:"prompt_cache_normalize"`
 	BridgeDefaultEffort         *string                  `json:"bridge_default_effort"`
+	BridgeToollessResample      *bool                    `json:"bridge_toolless_resample"`
 	ThinkingBudgetMappings      *[]ThinkingBudgetMapping `json:"thinking_budget_mappings"`
 }
 
@@ -383,6 +392,11 @@ func (c *Config) applyEnv() {
 			c.PromptCacheNormalize = b
 		}
 	}
+	if v := os.Getenv("OPENCODE_CC_BRIDGE_TOOLLESS_RESAMPLE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.BridgeToollessResample = b
+		}
+	}
 }
 
 // Save persists the config to disk. Caller is responsible for holding any
@@ -434,6 +448,7 @@ func (c *Config) Snapshot() *Config {
 		PromptCacheAnthropicControl: c.PromptCacheAnthropicControl,
 		PromptCacheNormalize:        c.PromptCacheNormalize,
 		BridgeDefaultEffort:         c.BridgeDefaultEffort,
+		BridgeToollessResample:      c.BridgeToollessResample,
 	}
 	if c.ModelMappings != nil {
 		cp.ModelMappings = append([]ModelMapping(nil), c.ModelMappings...)
@@ -645,6 +660,9 @@ func (c *Config) ApplyPatch(src *Patch) {
 	}
 	if src.BridgeDefaultEffort != nil {
 		c.BridgeDefaultEffort = strings.ToLower(strings.TrimSpace(*src.BridgeDefaultEffort))
+	}
+	if src.BridgeToollessResample != nil {
+		c.BridgeToollessResample = *src.BridgeToollessResample
 	}
 	if src.ThinkingBudgetMappings != nil {
 		c.ThinkingBudgetMappings = append([]ThinkingBudgetMapping(nil), (*src.ThinkingBudgetMappings)...)

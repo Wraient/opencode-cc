@@ -43,19 +43,28 @@ func ConvertResponse(in *OpenAIResponse, requestModel string) *AnthropicResponse
 		}
 		// Tool calls.
 		for _, tc := range choice.Message.ToolCalls {
-			block := toolCallToBlock(tc)
+			block, ok := toolCallToBlock(tc)
+			if !ok && truncatedFinish(choice.FinishReason) {
+				// Length-truncated arguments are not a real call: skip the
+				// block so the turn surfaces as max_tokens instead of a
+				// fake tool_use with empty {} args the client would
+				// execute, fail, and retry-loop on.
+				continue
+			}
 			out.Content = append(out.Content, block)
 			cacheReasoningForToolCalls(choice.Message.ReasoningContent, block.ID)
 			hasToolUse = true
 		}
 		if choice.Message.FunctionCall != nil {
-			block := toolCallToBlock(OpenAIToolCall{
+			block, ok := toolCallToBlock(OpenAIToolCall{
 				Type:     "function",
 				Function: *choice.Message.FunctionCall,
 			})
-			out.Content = append(out.Content, block)
-			cacheReasoningForToolCalls(choice.Message.ReasoningContent, block.ID)
-			hasToolUse = true
+			if ok || !truncatedFinish(choice.FinishReason) {
+				out.Content = append(out.Content, block)
+				cacheReasoningForToolCalls(choice.Message.ReasoningContent, block.ID)
+				hasToolUse = true
+			}
 		}
 	}
 
@@ -99,23 +108,33 @@ func messageContentString(m *OpenAIMessage) string {
 
 // toolCallToBlock maps an OpenAI tool call to an Anthropic tool_use content
 // block. Arguments is a JSON string on the OpenAI side and an object on the
-// Anthropic side.
-func toolCallToBlock(tc OpenAIToolCall) AnthropicContent {
+// Anthropic side. ok is false when the arguments are not valid JSON — the
+// block still carries a {} fallback (never invalid JSON downstream), but the
+// caller may choose to skip truncated calls instead of faking them.
+func toolCallToBlock(tc OpenAIToolCall) (AnthropicContent, bool) {
 	args := jsonRawMessage(tc.Function.Arguments)
 	if len(args) == 0 {
 		args = jsonRawMessage(`{}`)
 	}
 	// Validate; fall back to {} on parse error so we never send invalid JSON.
 	var probe any
+	ok := true
 	if err := json.Unmarshal(args, &probe); err != nil {
 		args = jsonRawMessage(`{}`)
+		ok = false
 	}
 	return AnthropicContent{
 		Type:  "tool_use",
 		ID:    ensureToolID(tc.ID),
 		Name:  tc.Function.Name,
 		Input: args,
-	}
+	}, ok
+}
+
+// truncatedFinish reports whether the upstream stopped for length: any tool
+// payload on such a turn is cut off mid-JSON, not a callable invocation.
+func truncatedFinish(reason *string) bool {
+	return reason != nil && *reason == "length"
 }
 
 // ensureToolID normalises a tool id to Anthropic's required shape: it MUST be

@@ -87,7 +87,7 @@ func TestHandleStreamResponseFlushesIncrementally(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		srv.handleStreamResponse(down, upResp, req, "m", "target-m", reqBody, time.Now())
+		srv.handleStreamResponse(down, upResp, req, "m", "target-m", reqBody, time.Now(), nil, false)
 	}()
 
 	// Headers + message_start must flush before any upstream chunk arrives.
