@@ -616,6 +616,24 @@ claude-oc -p 'Reply with exactly OK' --no-session-persistence --output-format js
 grok -p 'Reply with exactly OK' --no-plan --max-turns 1 --output-format json
 ```
 
+### Session-gate regression checklist (2026-10-13)
+
+The free tier failed closed with `403 FreeTierError` ("can only be used from
+within OpenCode") for a *long-standing* proxy that looked correct. Nothing in
+the request shape had changed; only the gateway's validation did. If free-tier
+requests start failing this way again, check these in order:
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| `403 FreeTierError` on every free request | session id is not genuine-shaped | the 12-hex prefix must decode as a **descending** timestamp (`~(ts_ms*0x1000+ctr)`); an all-hex/sha256 session is rejected |
+| `200` locally, `403` from a harness | harness sends its own session header | an all-hex or stale (>24h) downstream session must be re-synthesized, never forwarded |
+| Intermittent `403` after ~12h | session timestamp went stale | the prefix tracks a 12h bucket; check `sessionBucketMillis` |
+| Tool calls die with "tool not found" | phantom marker tool reached the client | see "Phantom marker-tool filtering" above; `chatToolCallFilter` must resolve `shell`/`read` against the declared tool list |
+| Stream chunks silently ignored | SSE framing corrupted by a rewrite | every emitted line must still start with `data:`; `TestRelayPreservesSSEFramingOnRewrite` pins this |
+
+`go test ./internal/server/ -run 'TestChatProxy|TestRelayPreservesSSEFraming|TestSynthSessionIDGateShape'`
+covers the session gate, the tool filter, and the SSE framing contract.
+
 See `~/.config/opencode-cc/README.md`, `~/.claude/README.md`, and
 `~/.grok/README.md` for service, backup, and troubleshooting details.
 
