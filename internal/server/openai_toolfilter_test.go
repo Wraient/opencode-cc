@@ -3,8 +3,13 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Kiowx/opencode-cc/internal/config"
 )
 
 // applyFilter runs one SSE data line through the filter and returns the
@@ -313,4 +318,138 @@ func TestRelayPassesNonJSONLinesThrough(t *testing.T) {
 	if got := dst.String(); got != in {
 		t.Fatalf("non-JSON lines mutated:\n in: %q\nout: %q", in, got)
 	}
+}
+
+// chatFilterE2EServer builds a Server whose only upstream replays the supplied
+// SSE chunks verbatim, so the full handler path (not just the relay) can be
+// exercised against a deliberately-phantom tool call.
+func chatFilterE2EServer(t *testing.T, chunks ...string) *Server {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl, _ := w.(http.Flusher)
+		for _, chunk := range chunks {
+			_, _ = io.WriteString(w, "data: "+chunk+"\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := config.Default()
+	cfg.UpstreamBase = ""
+	cfg.ZenAPIKey = ""
+	cfg.Upstreams = []config.Upstream{{BaseURL: upstream.URL, APIKey: "k", Enabled: true}}
+	cfg.NativeAnthropic = false
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "space-bunny-free"}}
+	srv, _ := newTestServerWithCfg(t, cfg)
+	return srv
+}
+
+const chatFilterE2EBody = `{"model":"client-model","stream":true,"max_tokens":64,` +
+	`"tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}],` +
+	`"messages":[{"role":"user","content":"list files"}]}`
+
+func chatFilterE2ECall(t *testing.T, srv *Server) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatFilterE2EBody))
+	rec := httptest.NewRecorder()
+	srv.OpenAIProxy().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+// assertSSEFraming checks the wire shape a strict SSE parser requires: every
+// non-blank line is a data line, and no rewrite introduced a blank event.
+func assertSSEFraming(t *testing.T, raw string) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(raw, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			t.Fatalf("SSE framing corrupted, non-data line: %q\nfull: %q", line, raw)
+		}
+	}
+	if strings.Contains(raw, "}\n\n\n") {
+		t.Fatalf("rewrite injected a blank event: %q", raw)
+	}
+	if !strings.Contains(raw, "data: [DONE]") {
+		t.Fatalf("DONE sentinel lost: %q", raw)
+	}
+}
+
+// TestChatProxyFiltersPhantomToolCallEndToEnd drives the whole
+// /v1/chat/completions streaming path against a fake upstream that deliberately
+// emits the injected "shell" marker. The client declared only "Bash", so the
+// wire output must carry a renamed, still-parseable call — the case that used
+// to reach the client as a raw "tool not found" and kill the turn.
+func TestChatProxyFiltersPhantomToolCallEndToEnd(t *testing.T) {
+	srv := chatFilterE2EServer(t,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`,
+	)
+
+	raw := chatFilterE2ECall(t, srv)
+
+	if strings.Contains(raw, `"name":"shell"`) {
+		t.Fatalf("phantom marker reached the client: %s", raw)
+	}
+	if !strings.Contains(raw, `"name":"Bash"`) {
+		t.Fatalf("call was not renamed to the declared tool: %s", raw)
+	}
+	if !strings.Contains(raw, `ls`) {
+		t.Fatalf("argument fragment lost: %s", raw)
+	}
+	assertSSEFraming(t, raw)
+}
+
+// A phantom the client cannot resolve at all must be dropped, and the choice
+// must not advertise tool_calls or the client waits forever for results.
+func TestChatProxyDropsUnresolvableToolCallEndToEnd(t *testing.T) {
+	srv := chatFilterE2EServer(t,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"frobnicate","arguments":"{}"}}]},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+
+	raw := chatFilterE2ECall(t, srv)
+
+	if strings.Contains(raw, "frobnicate") {
+		t.Fatalf("unresolvable tool call reached the client: %s", raw)
+	}
+	if strings.Contains(raw, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("dropped call still advertised as tool_calls: %s", raw)
+	}
+	if !strings.Contains(raw, `"finish_reason":"stop"`) {
+		t.Fatalf("finish_reason should fall back to stop: %s", raw)
+	}
+	assertSSEFraming(t, raw)
+}
+
+// A stream with no tool calls at all must pass through byte-identical: the
+// filter must stay invisible on the common path.
+func TestChatProxyPlainStreamUntouchedEndToEnd(t *testing.T) {
+	srv := chatFilterE2EServer(t,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	raw := chatFilterE2ECall(t, srv)
+
+	if !strings.Contains(raw, `"content":"hi"`) {
+		t.Fatalf("text content lost: %s", raw)
+	}
+	if !strings.Contains(raw, `"finish_reason":"stop"`) {
+		t.Fatalf("finish_reason altered on a plain stream: %s", raw)
+	}
+	assertSSEFraming(t, raw)
 }

@@ -105,7 +105,7 @@ func splitVideoMarkers(text string) ([]textVideoSpan, error) {
 	type cand struct {
 		fullStart, fullEnd int
 		refStart, refEnd   int
-		explicit          bool
+		explicit           bool
 	}
 	var all []cand
 	for _, m := range videoMarker.FindAllStringSubmatchIndex(text, -1) {
@@ -231,7 +231,7 @@ const (
 // ~maxVideoBytes base64.
 var videoCache = struct {
 	sync.Mutex
-	m   map[string]string
+	m     map[string]string
 	order []string
 }{m: make(map[string]string)}
 
