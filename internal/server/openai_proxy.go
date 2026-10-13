@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -275,6 +276,11 @@ func (s *Server) relayOpenAIJSON(
 	if status == 0 {
 		status = http.StatusOK
 	}
+	// Stamp the cooldown before WriteHeader: headers set afterwards are
+	// ignored. copyOpenAIHeaders already relayed an upstream Retry-After.
+	if status == http.StatusTooManyRequests {
+		s.stampCooldown(w, resp.Header, targetModel)
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
 
@@ -334,15 +340,25 @@ func (s *Server) relayOpenAIStream(
 	}
 
 	copyOpenAIHeaders(w.Header(), resp.Header, true)
+	// An upstream 429 relayed verbatim keeps its own Retry-After (copied above);
+	// when the upstream sent none, synthesise a real cooldown so the next hop
+	// backs off instead of hot-looping.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		s.stampCooldown(w, resp.Header, targetModel)
+	}
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
 
 	var responseLog strings.Builder
+	// Phantom free-tier marker tools ("shell"/"read") are injected upstream but
+	// never declared by this client. Resolve them to the client's real tools so
+	// an OpenAI-compatible client never sees a tool it does not have.
 	relay := &openAIStreamRelay{
 		dst:      w,
 		flusher:  flusher,
 		log:      &responseLog,
 		logLimit: s.cfg.Snapshot().MaxBodyLogBytes,
+		filter:   newChatToolCallFilter(declaredOpenAIToolNames(reqBody)),
 	}
 	if _, err := io.Copy(relay, reader); err != nil {
 		errPayload, _ := json.Marshal(map[string]any{
@@ -357,20 +373,28 @@ func (s *Server) relayOpenAIStream(
 			http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
 		return
 	}
+	_ = relay.Flush()
+
+	if summary := relay.filter.summary(); summary != "" {
+		log.Printf("opencode-cc: chat stream tool filter %s model=%s target=%s",
+			summary, incomingModel, targetModel)
+	}
 
 	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, true, resp.StatusCode,
 		relay.inputTokens, relay.outputTokens, relay.cachedInputTokens, 0, relay.stopReason,
 		string(reqBody), responseLog.String(), time.Since(start))
 }
 
-// openAIStreamRelay writes upstream bytes directly to the client and flushes
-// every write. It only observes complete SSE data lines for usage logging; it
-// never re-encodes or otherwise changes the native OpenAI stream.
+// openAIStreamRelay writes upstream bytes to the client and flushes every
+// write. It re-encodes only tool-bearing SSE data lines (to resolve phantom
+// free-tier marker tool names into the client's declared tools); every other
+// byte is relayed untouched.
 type openAIStreamRelay struct {
 	dst      io.Writer
 	flusher  http.Flusher
 	log      *strings.Builder
 	logLimit int
+	filter   *chatToolCallFilter
 
 	pending           []byte
 	inputTokens       int
@@ -380,44 +404,122 @@ type openAIStreamRelay struct {
 }
 
 func (r *openAIStreamRelay) Write(p []byte) (int, error) {
-	n, err := r.dst.Write(p)
-	if n > 0 {
-		appendLimited(r.log, string(p[:n]), r.logLimit)
-		r.observe(p[:n])
-		r.flusher.Flush()
-	}
-	return n, err
-}
-
-func (r *openAIStreamRelay) observe(p []byte) {
 	r.pending = append(r.pending, p...)
 	for {
 		i := bytes.IndexByte(r.pending, '\n')
 		if i < 0 {
-			return
+			break
 		}
-		line := strings.TrimSuffix(string(r.pending[:i]), "\r")
+		line := r.pending[:i+1]
 		r.pending = r.pending[i+1:]
-		if !strings.HasPrefix(line, "data:") {
-			continue
+		if err := r.emitLine(line); err != nil {
+			return 0, err
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
-			continue
-		}
-		var chunk proxy.OpenAIStreamChunk
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue
-		}
-		if chunk.Usage != nil {
-			r.inputTokens = chunk.Usage.PromptTokens
-			r.outputTokens = chunk.Usage.CompletionTokens
-			r.cachedInputTokens = chunk.Usage.CachedPromptTokens()
-		}
-		for _, choice := range chunk.Choices {
-			if choice.FinishReason != nil {
-				r.stopReason = *choice.FinishReason
+	}
+	return len(p), nil
+}
+
+// Flush forwards any trailing bytes that never got a newline terminator.
+func (r *openAIStreamRelay) Flush() error {
+	if len(r.pending) == 0 {
+		return nil
+	}
+	line := r.pending
+	r.pending = nil
+	return r.emitLine(line)
+}
+
+// emitLine filters and forwards one complete SSE line (newline included).
+func (r *openAIStreamRelay) emitLine(line []byte) error {
+	body := line
+	trailer := []byte("\n")
+	if n := len(body); n > 0 && body[n-1] == '\n' {
+		body = body[:n-1]
+		trailer = line[n-1:]
+	}
+
+	out := body
+	if r.filter != nil {
+		// Rewrite only the JSON payload, keeping the "data:" prefix and the
+		// original line terminator. Dropping either would corrupt the SSE
+		// framing: the client would ignore the line as a nameless event.
+		if data, ok := sseDataPayload(body); ok {
+			if filtered, changed := r.filter.filterChatToolCalls(data); changed {
+				rewritten := make([]byte, 0, len(body))
+				rewritten = append(rewritten, body[:sseDataOffset(body)]...)
+				rewritten = append(rewritten, filtered...)
+				if rest := body[sseDataOffset(body)+len(data):]; len(rest) > 0 {
+					rewritten = append(rewritten, rest...)
+				}
+				out = rewritten
 			}
+		}
+	}
+
+	if _, err := r.dst.Write(out); err != nil {
+		return err
+	}
+	if _, err := r.dst.Write(trailer); err != nil {
+		return err
+	}
+	appendLimited(r.log, string(out), r.logLimit)
+	appendLimited(r.log, string(trailer), r.logLimit)
+	r.observe(body)
+	r.flusher.Flush()
+	return nil
+}
+
+// sseDataPayload returns the JSON payload of an SSE "data:" line.
+func sseDataPayload(line []byte) ([]byte, bool) {
+	start := sseDataOffset(line)
+	if start < 0 {
+		return nil, false
+	}
+	end := bytes.IndexByte(line[start:], '\n')
+	if end < 0 {
+		end = len(line)
+	} else {
+		end += start
+	}
+	data := bytes.TrimSpace(bytes.TrimRight(line[start:end], "\r\n"))
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return nil, false
+	}
+	return data, true
+}
+
+// sseDataOffset returns the index where an SSE "data:" line's payload begins,
+// or -1 when the line is not a data line. The payload is everything after the
+// "data:" field name and its single optional space, matching the SSE spec: a
+// line that does not start with "data:" is a field-less event line.
+func sseDataOffset(line []byte) int {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return -1
+	}
+	off := len("data:")
+	if off < len(line) && line[off] == ' ' {
+		off++
+	}
+	return off
+}
+
+func (r *openAIStreamRelay) observe(line []byte) {
+	data, ok := sseDataPayload(line)
+	if !ok {
+		return
+	}
+	var chunk proxy.OpenAIStreamChunk
+	if json.Unmarshal(data, &chunk) != nil {
+		return
+	}
+	if chunk.Usage != nil {
+		r.inputTokens = chunk.Usage.PromptTokens
+		r.outputTokens = chunk.Usage.CompletionTokens
+		r.cachedInputTokens = chunk.Usage.CachedPromptTokens()
+	}
+	for _, choice := range chunk.Choices {
+		if choice.FinishReason != nil {
+			r.stopReason = *choice.FinishReason
 		}
 	}
 }

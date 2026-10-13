@@ -48,7 +48,9 @@ Each protocol implements the `TranslateRequest`, `TranslateResponse`, and `Trans
   required.
 - **OpenAI client compatibility.** Supports `POST /v1/chat/completions` and an OpenAI-compatible `/v1/models`
   response, allowing OpenAI SDKs and compatible desktop clients to connect directly. The OpenAI path passes through
-  Zen's native `/go/v1/chat/completions` JSON/SSE response without converting it to Anthropic format.
+  Zen's native `/go/v1/chat/completions` JSON/SSE response without converting it to Anthropic format. Tool calls are
+  filtered against the client's declared tool list (see "Phantom marker-tool filtering" below), because the free lane
+  injects tools the client never declared.
 - **Codex CLI compatibility.** Exposes `POST /v1/responses` and translates Codex Responses API requests, streaming
   text events, and function calls to Zen. OpenAI-compatible target models use `/go/v1/chat/completions`, while
   Claude/Qwen target models can use the native `/v1/messages` upstream path.
@@ -511,6 +513,72 @@ attempt now returns `200` on retry instead of failing.
 Post-deploy, three consecutive turns through cli-proxy-api `:8317` separated by
 100s idle gaps ran **1.24s / 1.29s / 1.39s** with a single warm upstream
 connection held throughout.
+
+### Rate-limit / cooldown propagation (Oct 2026)
+
+Zen signals exhaustion with `retry-after` on its 429. Measured directly against
+Zen during a free-tier lockout:
+
+```
+HTTP/2 429
+retry-after: 52638          # ~14.6 hours — the rest of the daily window
+```
+
+That header used to be **discarded**, so every downstream hop saw a bare `429`
+with no timing information. Each hop then invented a short backoff, retried
+into the same wall, and the chain stalled even though the cooldown was known and
+very long. `internal/server/cooldown.go` makes the signal survive the hop:
+
+- Upstream `retry-after` wins and is re-emitted verbatim (both the
+  `/v1/messages` and `/v1/chat/completions` lanes).
+- `x-ratelimit-reset` is accepted as a fallback, in both epoch and HTTP-date
+  form.
+- When an upstream sends no usable value, a **progressive ladder** is used
+  instead of an instant retry: 30s → 2m → 5m → 10m → 15m, capped. A lane that
+  answers again (`logSuccessWithCache`) or a quiet gap at least as long as the
+  step just handed out resets the ladder, so a transient blip still recovers
+  quickly while a genuinely dead lane stops being hammered.
+- Values are clamped to `[5s, 24h]`. The 24h ceiling is above Zen's own daily
+  window, so the real signal passes through intact; the floor stops a
+  header-less 429 from becoming a hot loop.
+- Non-429 responses never get a `Retry-After`.
+
+Downstream responses carry `Retry-After` plus the `x-ratelimit-*` family, with
+the epoch form kept consistent with `Retry-After` so a client reading either
+waits the same amount of time.
+
+Verified live: Zen's 429 surfaces at `http://127.0.0.1:8787` as
+`Retry-After: 52051`, and cliproxyapi's log shows it parking the credential for
+`remaining=14h26m4s` instead of the previous `1m30s`.
+
+Zen's free lane gates on the exact tool shape the official OpenCode client
+sends, so `PrepareFreeChatBody` injects two marker tools — `shell` and `read` —
+into every free-model request. Those tools are **not** declared by the
+downstream client, and the model occasionally calls one spontaneously.
+
+The `/v1/messages` lane already handled this: `StreamConverter.RestrictTools`
+resolves such names through `proxy.ResolveDeclaredToolName` (`shell` → the
+client's `Bash`/`bash`, `default.shell` → same after namespace stripping) so the
+call survives as a real tool call instead of stalling the agent loop.
+
+`/v1/chat/completions` — the lane **OpenCode itself** uses — was a raw byte
+relay with no such filtering, so a phantom `shell` call reached the client
+verbatim. OpenCode has no such tool, so the turn died with a tool-not-found
+error. `internal/server/openai_toolfilter.go` applies the same resolution to the
+streaming Chat Completions wire format:
+
+- Marker names are **renamed** to the client's declared equivalent.
+- Unresolvable names are **dropped**, and a choice that lost every call has its
+  `finish_reason` corrected from `tool_calls` to `stop` — otherwise OpenAI SDKs
+  treat it as "calls to run" and wait forever for tool results that never come.
+- Verdicts are cached per `(choice, tool-call index)`, so argument-only
+  continuation fragments inherit the decision made when the name arrived.
+- Lines with no tool calls are returned **byte-identical**, keeping the common
+  path a pure relay and preserving unknown upstream fields.
+
+Verified on staging: with a client declaring only `bash`, an upstream `shell`
+call arrives as `bash` with `finish_reason: tool_calls`; with a client declaring
+neither, it is dropped and the reason falls back to `stop`.
 
 Operational note: the request log (`~/data/opencode-cc.db`) has no pruning and
 had reached **215MB / 10,218 rows** (avg 21KB of bodies per row) while the

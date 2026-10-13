@@ -22,6 +22,7 @@ type Server struct {
 	httpClient   *http.Client
 	srv          *http.Server
 	effortLevels *EffortLevelsCache
+	cooldowns    *cooldownTracker
 
 	// done is closed by Shutdown to stop background loops (keep-alive pinger).
 	done chan struct{}
@@ -41,6 +42,7 @@ func New(cfg *config.Config, st *store.Store) *Server {
 		cfg:          cfg,
 		store:        st,
 		effortLevels: LoadEffortLevelsCache(dataDir),
+		cooldowns:    newCooldownTracker(),
 		done:         make(chan struct{}),
 		httpClient: &http.Client{
 			Timeout: 0, // streaming: no global timeout (per-request override used)

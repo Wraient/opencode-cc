@@ -418,6 +418,10 @@ func (r *nativeAnthropicStreamRelay) observe(p []byte) {
 
 // passUpstreamError reads the upstream error body and returns an Anthropic-
 // shaped error to the client, while logging the failed request.
+// passUpstreamError relays an upstream error to the client. Rate-limit
+// responses additionally carry a Retry-After so the next hop in the chain
+// (cliproxyapi, then the user's harness) can wait out the real cooldown
+// instead of inventing a short backoff and retrying into the same wall.
 func (s *Server) passUpstreamError(w http.ResponseWriter, resp *http.Response, r *http.Request, inModel, target string, reqBody []byte, start time.Time) {
 	defer resp.Body.Close()
 	eb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
@@ -435,11 +439,32 @@ func (s *Server) passUpstreamError(w http.ResponseWriter, resp *http.Response, r
 		errType = "authentication_error"
 	case http.StatusTooManyRequests:
 		errType = "rate_limit_error"
+		s.stampCooldown(w, resp.Header, target)
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		errType = "timeout_error"
 	}
 	writeAnthropicError(w, resp.StatusCode, errType, msg)
 	s.logFailed(r.Context(), r, inModel, target, false, resp.StatusCode, msg, reqBody, time.Since(start))
+}
+
+// stampCooldown writes the resolved cooldown onto the downstream response.
+// The upstream's own Retry-After wins; otherwise a progressive fallback is
+// used so a header-less 429 still produces real backoff instead of a hot loop.
+func (s *Server) stampCooldown(w http.ResponseWriter, upstream http.Header, scope string) {
+	if s.cooldowns == nil {
+		s.cooldowns = newCooldownTracker()
+	}
+	wait, ok := upstreamCooldownSeconds(upstream, time.Now())
+	if !ok {
+		wait = int(s.cooldowns.nextFallback(scope).Seconds())
+	} else {
+		// A real value resets the escalation ladder.
+		s.cooldowns.noteSuccess(scope)
+	}
+	d := clampCooldown(time.Duration(wait) * time.Second)
+	applyCooldownHeaders(w, d, 0, 0)
+	log.Printf("opencode-cc: upstream rate limit, cooldown=%ds scope=%s (from upstream: %v)",
+		int(d.Seconds()), scope, ok)
 }
 
 // handleNonStreamResponse decodes the upstream JSON, converts it, and writes
@@ -820,6 +845,11 @@ func (s *Server) logSuccess(ctx context.Context, r *http.Request, inModel, targe
 }
 
 func (s *Server) logSuccessWithCache(ctx context.Context, r *http.Request, inModel, target string, stream bool, status, inputTok, outputTok, cachedInputTok, cacheCreationInputTok int, stopReason, reqBody, respBody string, dur time.Duration) {
+	// A lane that answered again is no longer cooling down: reset the
+	// escalation ladder so the next 429 starts from the shortest fallback.
+	if status < http.StatusBadRequest && s.cooldowns != nil {
+		s.cooldowns.noteSuccess(target)
+	}
 	apiKey := APIKeyFromContext(ctx)
 	if !s.shouldLog() {
 		// Still record usage for quota even if request logging is off.
