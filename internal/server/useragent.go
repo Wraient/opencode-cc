@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -73,6 +74,14 @@ func detectOCVersion() string {
 		{"/usr/bin/opencode", "--version"},
 		{"opencode1", "--version"},
 		{"opencode", "--version"},
+	}
+	// Explicit home installs: systemd services and other restricted-PATH
+	// environments may not resolve bare "opencode" even though it exists.
+	if home := os.Getenv("HOME"); home != "" {
+		candidates = append(candidates,
+			[]string{home + "/.opencode/bin/opencode", "--version"},
+			[]string{home + "/.local/bin/opencode", "--version"},
+		)
 	}
 	for _, c := range candidates {
 		out, err := exec.Command(c[0], c[1:]...).Output()

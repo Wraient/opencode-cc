@@ -586,18 +586,24 @@ root filesystem sat at 98%. That is unrelated to TTFT — inserts happen in
 background goroutines, off the critical path — but it is a disk-space risk
 worth adding retention for.
 
-## Local harness compatibility (2026-09-23)
+## Local harness compatibility (2026-09-23, session gate fix 2026-10-13)
 
 The proxy now supports the current Zen free-tier gate used by Claude Code and
 Grok Build. Free model requests are sent upstream in the official OpenCode
 shape: `opencode/latest/<version>/cli` User-Agent, canonical
-`x-opencode-session` (`ses_` + 12 lowercase hex + 14 base62), matching
-`x-session-affinity`/`x-session-id`, `stream:true`, and lowercase `shell` and
-`read` tool markers when the harness has different tool names. The caller's
+`x-opencode-session` (`ses_` + 12-hex descending timestamp + 14 base62,
+byte-identical construction to opencode's `Identifier.descending()`),
+matching `x-session-affinity`/`x-session-id`, `stream:true`, and lowercase `shell` and
+`read` tool markers when the harness has different tool names. Since
+2026-10-13 Zen validates the session *value* on the free-tier lane
+(`FreeTierError` for hash-shaped/all-hex sessions), synthesized sessions use
+a genuine descending-timestamp prefix for the current 12h bucket with a
+hash-derived tail (stable sticky routing, always fresh). The caller's
 actual tools and response mode are preserved; forced SSE is aggregated back to
 JSON for non-streaming clients. The compatibility layer lives in
 `internal/proxy/free_tier.go` and `internal/proxy/stream_aggregate.go`, with
-protocol wiring in `internal/server/{proxy.go,openai_proxy.go,responses_proxy.go,responses_passthrough.go,anthropic_responses.go}`.
+protocol wiring in `internal/server/{proxy.go,openai_proxy.go,responses_proxy.go,responses_passthrough.go,anthropic_responses.go}` and
+session synthesis in `internal/server/zen_headers.go`.
 
 The local deployment uses `muse-spark-1.3-contributor-free` with `xhigh`
 reasoning for both harnesses:
