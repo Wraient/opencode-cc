@@ -26,8 +26,8 @@ func TestSetZenSessionHeadersForwardsClientValues(t *testing.T) {
 	if got := up.Header.Get("x-opencode-session"); got != fresh {
 		t.Errorf("session = %q, want forwarded client value %q", got, fresh)
 	}
-	if got := up.Header.Get("x-opencode-request"); got != "msg_abcdefghijklmnopqrstuvwxyz" {
-		t.Errorf("request = %q, want forwarded client value", got)
+	if got := up.Header.Get("x-opencode-request"); got != "" {
+		t.Errorf("request = %q, want obsolete request header omitted", got)
 	}
 	if got := up.Header.Get("x-opencode-project"); got != "prj_9" {
 		t.Errorf("project = %q, want forwarded client value", got)
@@ -63,8 +63,8 @@ func TestSetZenSessionHeadersSynthesizes(t *testing.T) {
 	if up2.Header.Get("x-opencode-session") != up.Header.Get("x-opencode-session") {
 		t.Errorf("session not stable for same sticky key")
 	}
-	if got := up.Header.Get("x-opencode-request"); !strings.HasPrefix(got, "msg_") || len(got) != 30 {
-		t.Errorf("request = %q, want stock msg_ format", got)
+	if got := up.Header.Get("x-opencode-request"); got != "" {
+		t.Errorf("request = %q, want obsolete request header omitted", got)
 	}
 	if got := up.Header.Get("x-opencode-client"); got != "cli" {
 		t.Errorf("client = %q, want stock cli", got)
@@ -216,45 +216,6 @@ func TestSessionPrefixAgeDecodes(t *testing.T) {
 	}
 }
 
-// TestAscendingRequestPrefixVector pins the msg_* construction to opencode's
-// ascending() algorithm.
-func TestAscendingRequestPrefixVector(t *testing.T) {
-	if got := ascendingRequestPrefix(1791904000000, 7); got != "135cd2800007" {
-		t.Errorf("prefix = %q, want 135cd2800007", got)
-	}
-}
-
-// TestSynthRequestIDShape: msg_ + 12-hex ascending-timestamp prefix (decodes
-// to ~now) + 14 base62 chars, unique per call.
-func TestSynthRequestIDShape(t *testing.T) {
-	a := synthRequestID()
-	b := synthRequestID()
-	for _, id := range []string{a, b} {
-		if !strings.HasPrefix(id, "msg_") || len(id) != 30 {
-			t.Fatalf("request = %q, want stock msg_ format", id)
-		}
-		rest := strings.TrimPrefix(id, "msg_")
-		prefix, tail := rest[:12], rest[12:]
-		v, err := strconv.ParseUint(prefix, 16, 48)
-		if err != nil {
-			t.Fatalf("request prefix %q is not hex", prefix)
-		}
-		const mask36 = uint64(0xfffffffff)
-		age := (uint64(time.Now().UnixMilli())&mask36 - ((v >> 12) & mask36)) & mask36
-		if age > 3600*1000 {
-			t.Errorf("request = %q decodes to %dms old, want ~now", id, age)
-		}
-		for _, c := range tail {
-			if !strings.ContainsRune(synthIDAlphabet, c) {
-				t.Fatalf("request tail %q has non-base62 char", tail)
-			}
-		}
-	}
-	if a == b {
-		t.Errorf("request ids not unique: %q", a)
-	}
-}
-
 func TestSetZenSessionHeadersOmitsUnknownSession(t *testing.T) {
 	// Since 2026-09 Zen hard-rejects free-tier requests without
 	// x-opencode-session (MissingSessionID), so the header is never
@@ -306,7 +267,31 @@ func TestPassthroughSendsSessionHeaders(t *testing.T) {
 	if gotSession != fresh {
 		t.Errorf("upstream session = %q, want forwarded downstream value %q", gotSession, fresh)
 	}
-	if gotClient == "" || gotRequest == "" {
-		t.Errorf("upstream client=%q request=%q, want both set", gotClient, gotRequest)
+	if gotClient == "" || gotRequest != "" {
+		t.Errorf("upstream client=%q request=%q, want client set and obsolete request absent", gotClient, gotRequest)
+	}
+}
+
+func TestSetZenSessionHeadersPreservesChildAndParent(t *testing.T) {
+	fresh := "ses_" + descendingSessionPrefix(time.Now().UnixMilli(), 1) + "abcdefghijklmn"
+	child := "ses_" + descendingSessionPrefix(time.Now().UnixMilli(), 2) + "ABCDEFGHIJKLMN"
+	down := http.Header{}
+	down.Set("x-opencode-session", fresh)
+	down.Set("x-opencode-session-id", child)
+	down.Set("x-opencode-parent-session-id", fresh)
+	down.Set("x-parent-session-id", fresh)
+	down.Set("x-opencode-request", "msg_obsolete")
+	up, _ := http.NewRequest(http.MethodPost, "http://x", nil)
+	up.Header.Set("x-opencode-request", "msg_obsolete")
+	setZenSessionHeaders(up, down, "sticky")
+	for name, want := range map[string]string{
+		"x-opencode-session": fresh, "x-opencode-session-id": child,
+		"x-session-affinity": fresh, "x-session-id": fresh,
+		"x-opencode-parent-session-id": fresh, "x-parent-session-id": fresh,
+		"x-opencode-request": "",
+	} {
+		if got := up.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 }

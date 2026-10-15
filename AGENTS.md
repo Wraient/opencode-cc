@@ -55,7 +55,12 @@
 
 ## Notes
 
-- Live config is env-only (`~/.config/opencode-cc/env`); there is no
-  `config.json` in `~/data`. Staging must source the same env file.
+- Live config combines `~/.config/opencode-cc/env` with `~/data/config.json`
+  (confirmed 2026-10-15). Inspect saved settings without printing credentials.
+  A nonempty `upstreams` pool takes precedence over the legacy base URL;
+  changing only the default or legacy env URL does not migrate that pool.
+  Staging must source the same env file and validate relevant saved settings.
+  The live saved upstream was migrated from `/zen` to `/inference` after
+  staging tests on 2026-10-15; timestamped config/binary backups are retained.
 - Uncommitted work may exist on `patch/opencode-user-agent`; check
   `git status` before building so you know what you're deploying.

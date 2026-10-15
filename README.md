@@ -284,7 +284,7 @@ This compatibility layer runs locally in the proxy and does not require a native
 ```jsonc
 {
   "listen_addr": ":8787",
-  "upstream_base": "https://opencode.ai/zen",
+  "upstream_base": "https://opencode.ai/inference",
   "native_anthropic": true,   // true smart-routes claude-* / qwen* target models to <upstream_base>/v1/messages
   "zen_api_key": "",           // Required Bearer token for the Zen gateway
   "panel_token": "",           // Web dashboard password; empty means open access
@@ -586,15 +586,20 @@ root filesystem sat at 98%. That is unrelated to TTFT — inserts happen in
 background goroutines, off the critical path — but it is a disk-space risk
 worth adding retention for.
 
-## Local harness compatibility (2026-09-23, session gate fix 2026-10-13)
+## Local harness compatibility (updated 2026-10-15)
 
-The proxy now supports the current Zen free-tier gate used by Claude Code and
+The default upstream is the current v2 `https://opencode.ai/inference` endpoint.
+Explicit upstream URLs, including Zen Go and custom backends, remain configurable.
+The proxy supports the current free-tier request contract used by Claude Code and
 Grok Build. Free model requests are sent upstream in the official OpenCode
 shape: `opencode/latest/<version>/cli` User-Agent, canonical
 `x-opencode-session` (`ses_` + 12-hex descending timestamp + 14 base62,
 byte-identical construction to opencode's `Identifier.descending()`),
-matching `x-session-affinity`/`x-session-id`, `stream:true`, and lowercase `shell` and
-`read` tool markers when the harness has different tool names. Since
+matching `x-session-affinity`/`x-session-id`, `x-opencode-session-id`,
+`stream:true`, and the released `shell` and `read` tool definitions when missing
+from the harness. Empty placeholder schemas no longer work. The obsolete
+`x-opencode-request` header is omitted, matching v2.0.29. Adding it to a working
+CLI request independently caused 403 on 2026-10-15. Since
 2026-10-13 Zen validates the session *value* on the free-tier lane
 (`FreeTierError` for hash-shaped/all-hex sessions), synthesized sessions use
 a genuine descending-timestamp prefix for the current 12h bucket with a
@@ -616,15 +621,32 @@ claude-oc -p 'Reply with exactly OK' --no-session-persistence --output-format js
 grok -p 'Reply with exactly OK' --no-plan --max-turns 1 --output-format json
 ```
 
-### Session-gate regression checklist (2026-10-13)
+### Upstream compatibility checks (2026-10-15)
 
 The free tier failed closed with `403 FreeTierError` ("can only be used from
-within OpenCode") for a *long-standing* proxy that looked correct. Nothing in
-the request shape had changed; only the gateway's validation did. If free-tier
-requests start failing this way again, check these in order:
+within OpenCode") for a *long-standing* proxy that looked correct. Our
+hand-maintained request contract had drifted from the released CLI.
+On 2026-10-15, controlled probes found two independent 403 triggers: empty
+placeholder tool schemas and an obsolete `x-opencode-request` header. Session
+shape was only one part of compatibility.
+
+The audited source is v2.0.29, commit
+`042d0832f5f3a73eaa039a58a7d565776f6d4290`. Its tool definitions, MIT license,
+and source hashes are versioned in `internal/proxy/opencode/`. See
+[the audit and benchmark](docs/opencode-parity-2026-10-15.md).
+
+Run `python scripts/check_opencode_source.py --source /path/to/opencode --latest`
+to detect release/source drift. Run `scripts/bench_opencode_parity.py` with an
+isolated staging proxy and the released CLI to test the actual upstream
+contract, TTFT, throughput, and bounded concurrency. These are opt-in network
+checks; the unit tests alone cannot prove that a remote gateway still accepts
+a request. No background updater or recurring network test is installed.
+
+If free-tier requests fail again, check these in order:
 
 | Symptom | Likely cause | Check |
 |---|---|---|
+| `403 FreeTierError` despite valid session | upstream contract drift | capture the released CLI; check obsolete headers and complete tool schemas first |
 | `403 FreeTierError` on every free request | session id is not genuine-shaped | the 12-hex prefix must decode as a **descending** timestamp (`~(ts_ms*0x1000+ctr)`); an all-hex/sha256 session is rejected |
 | `200` locally, `403` from a harness | harness sends its own session header | an all-hex or stale (>24h) downstream session must be re-synthesized, never forwarded |
 | Intermittent `403` after ~12h | session timestamp went stale | the prefix tracks a 12h bucket; check `sessionBucketMillis` |

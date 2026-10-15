@@ -1,9 +1,27 @@
 package server
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestFallbackVersionMatchesAuditedSource(t *testing.T) {
+	data, err := os.ReadFile("../proxy/opencode/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if fallbackOCVersion != manifest.Version {
+		t.Fatalf("fallback version %s differs from audited source %s", fallbackOCVersion, manifest.Version)
+	}
+}
 
 func TestParseOCVersion(t *testing.T) {
 	cases := map[string]string{
@@ -52,5 +70,20 @@ func TestOcUAFormat(t *testing.T) {
 	}
 	if strings.Contains(ua, "opencode2") || strings.Contains(ua, "next") {
 		t.Fatalf("ocUA() = %q, contains preview output", ua)
+	}
+}
+
+func TestVersionDoesNotRegressBelowAuditedContract(t *testing.T) {
+	for _, tc := range []struct{ current, candidate, want string }{
+		{"2.0.29", "2.0.24", "2.0.29"},
+		{"2.0.9", "2.0.29", "2.0.29"},
+		{"2.0.29", "1.19.0", "2.0.29"},
+		{"2.0.29", "2.1.0", "2.1.0"},
+		{"2.0.29", "2.1.0-beta", "2.0.29"},
+		{"2.0.29", "bad", "2.0.29"},
+	} {
+		if got := newerStableOCVersion(tc.current, tc.candidate); got != tc.want {
+			t.Errorf("newerStableOCVersion(%q, %q) = %q, want %q", tc.current, tc.candidate, got, tc.want)
+		}
 	}
 }

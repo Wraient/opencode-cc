@@ -1,0 +1,689 @@
+{
+  "cli_version": "opencode v2.0.29",
+  "upstream": "https://opencode.ai/inference",
+  "proxy": "http://127.0.0.1:18787",
+  "models": {
+    "mimo-v2.6-flash-free": {
+      "cli": [
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "done",
+          "ttft_s": 4.120730292999724,
+          "visible_ttft_s": 5.147445428000083,
+          "total_s": 9.146629379999922,
+          "output_tokens": 155,
+          "input_tokens": 5136,
+          "tok_s": 30.918072789847816,
+          "content_chunks": 60,
+          "cli_wall_s": 11.07923513500009,
+          "cli_exit": 0,
+          "primary_requests": 1,
+          "tok_s_e2e": 16.946133221372673
+        },
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "done",
+          "ttft_s": 3.7562450430000354,
+          "visible_ttft_s": 3.7663513470001817,
+          "total_s": 7.259424807999949,
+          "output_tokens": 140,
+          "input_tokens": 5136,
+          "tok_s": 40.11928069671685,
+          "content_chunks": 52,
+          "cli_wall_s": 9.193255905000115,
+          "cli_exit": 0,
+          "primary_requests": 1,
+          "tok_s_e2e": 19.28527448148768
+        }
+      ],
+      "proxy": [
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "done",
+          "ttft_s": 2.9264271090000875,
+          "visible_ttft_s": 3.260101871999723,
+          "total_s": 6.809753760999683,
+          "output_tokens": 151,
+          "input_tokens": 5136,
+          "tok_s": 39.09531569129331,
+          "content_chunks": 58,
+          "tok_s_e2e": 22.17407637627017
+        },
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "done",
+          "ttft_s": 5.1428384770001685,
+          "visible_ttft_s": 5.563405286000034,
+          "total_s": 9.296272905000023,
+          "output_tokens": 137,
+          "input_tokens": 5136,
+          "tok_s": 33.02279951711737,
+          "content_chunks": 57,
+          "tok_s_e2e": 14.737088874221218
+        }
+      ],
+      "cli_summary": {
+        "requests": 2,
+        "successful": 2,
+        "ttft_s": 3.9384876679998797,
+        "visible_ttft_s": 4.456898387500132,
+        "tok_s": 35.518676743282334,
+        "total_s": 8.203027093999935,
+        "tok_s_e2e": 18.115703851430176
+      },
+      "proxy_summary": {
+        "requests": 2,
+        "successful": 2,
+        "ttft_s": 4.034632793000128,
+        "visible_ttft_s": 4.411753578999878,
+        "tok_s": 36.059057604205336,
+        "total_s": 8.053013332999853,
+        "tok_s_e2e": 18.455582625245693
+      },
+      "cli_request_contract": {
+        "path": "/v1/chat/completions",
+        "body_fields": [
+          "max_completion_tokens",
+          "messages",
+          "model",
+          "stream",
+          "stream_options",
+          "tools"
+        ],
+        "header_names": [
+          "accept",
+          "b3",
+          "content-type",
+          "traceparent",
+          "user-agent",
+          "x-opencode-client",
+          "x-opencode-org-id",
+          "x-opencode-project",
+          "x-opencode-session",
+          "x-opencode-session-id",
+          "x-session-affinity",
+          "x-session-id"
+        ],
+        "tools": [
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "shell",
+          "skill",
+          "subagent",
+          "webfetch",
+          "websearch",
+          "write",
+          "execute"
+        ]
+      },
+      "tool_reference_matches": {
+        "read": true,
+        "shell": true
+      },
+      "concurrency": {
+        "2": {
+          "cli_wire": {
+            "summary": {
+              "requests": 2,
+              "successful": 2,
+              "ttft_s": 8.510779130500168,
+              "visible_ttft_s": 9.521514773500257,
+              "tok_s": 38.67892863947307,
+              "total_s": 12.247496463000061,
+              "tok_s_e2e": 11.806933985537299
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 7.4027055530000325,
+                "visible_ttft_s": 8.013451206000354,
+                "total_s": 11.11128468700008,
+                "output_tokens": 142,
+                "input_tokens": 5136,
+                "tok_s": 38.46744502727723,
+                "content_chunks": 56,
+                "tok_s_e2e": 12.779800356131311
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 9.618852708000304,
+                "visible_ttft_s": 11.02957834100016,
+                "total_s": 13.383708239000043,
+                "output_tokens": 145,
+                "input_tokens": 5136,
+                "tok_s": 38.89041225166892,
+                "content_chunks": 55,
+                "tok_s_e2e": 10.834067614943285
+              }
+            ]
+          },
+          "proxy": {
+            "summary": {
+              "requests": 2,
+              "successful": 2,
+              "ttft_s": 1.5172618599999623,
+              "visible_ttft_s": 1.9376105134997488,
+              "tok_s": 37.346542002101486,
+              "total_s": 5.125272679499858,
+              "tok_s_e2e": 26.240027975236305
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 1.371846301000005,
+                "visible_ttft_s": 1.590321075999782,
+                "total_s": 4.8091889449997325,
+                "output_tokens": 126,
+                "input_tokens": 5136,
+                "tok_s": 36.72037481556817,
+                "content_chunks": 47,
+                "tok_s_e2e": 26.19984397390047
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 1.6626774189999196,
+                "visible_ttft_s": 2.2848999509997157,
+                "total_s": 5.4413564139999835,
+                "output_tokens": 143,
+                "input_tokens": 5136,
+                "tok_s": 37.9727091886348,
+                "content_chunks": 62,
+                "tok_s_e2e": 26.28021197657214
+              }
+            ]
+          }
+        },
+        "4": {
+          "cli_wire": {
+            "summary": {
+              "requests": 4,
+              "successful": 4,
+              "ttft_s": 3.356863373999886,
+              "visible_ttft_s": 3.9806696749999446,
+              "tok_s": 36.10433136764746,
+              "total_s": 7.666191642499825,
+              "tok_s_e2e": 19.833855047690122
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 2.725216029999956,
+                "visible_ttft_s": 3.1222365600001467,
+                "total_s": 8.071567746000255,
+                "output_tokens": 147,
+                "input_tokens": 5136,
+                "tok_s": 27.576174121625908,
+                "content_chunks": 53,
+                "tok_s_e2e": 18.212075352132633
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 3.4588686379997853,
+                "visible_ttft_s": 3.9837890329999937,
+                "total_s": 7.3047580819998075,
+                "output_tokens": 156,
+                "input_tokens": 5136,
+                "tok_s": 40.656798009939614,
+                "content_chunks": 59,
+                "tok_s_e2e": 21.355943379481804
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 3.355582430999675,
+                "visible_ttft_s": 3.9775503169998956,
+                "total_s": 8.027625202999843,
+                "output_tokens": 147,
+                "input_tokens": 5136,
+                "tok_s": 31.551864725355312,
+                "content_chunks": 54,
+                "tok_s_e2e": 18.311766715898443
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 3.3581443170000966,
+                "visible_ttft_s": 4.129821374999665,
+                "total_s": 6.82615062800005,
+                "output_tokens": 149,
+                "input_tokens": 5136,
+                "tok_s": 43.14713918533298,
+                "content_chunks": 50,
+                "tok_s_e2e": 21.827821875013992
+              }
+            ]
+          },
+          "proxy": {
+            "summary": {
+              "requests": 4,
+              "successful": 4,
+              "ttft_s": 2.6749302840000837,
+              "visible_ttft_s": 3.1042116559999613,
+              "tok_s": 37.09967010736335,
+              "total_s": 6.6845675049999045,
+              "tok_s_e2e": 21.65341796492852
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 2.660692772999937,
+                "visible_ttft_s": 3.008160941999904,
+                "total_s": 5.448383672999626,
+                "output_tokens": 142,
+                "input_tokens": 5136,
+                "tok_s": 51.250813124828525,
+                "content_chunks": 52,
+                "tok_s_e2e": 26.06277540689814
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 2.9773723859998427,
+                "visible_ttft_s": 3.486273603999962,
+                "total_s": 6.827041746999839,
+                "output_tokens": 147,
+                "input_tokens": 5136,
+                "tok_s": 38.2517539330793,
+                "content_chunks": 50,
+                "tok_s_e2e": 21.53202008243168
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 2.621272633999979,
+                "visible_ttft_s": 3.091584655999668,
+                "total_s": 6.54209326299997,
+                "output_tokens": 140,
+                "input_tokens": 5136,
+                "tok_s": 35.80101911718297,
+                "content_chunks": 61,
+                "tok_s_e2e": 21.399878352666743
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "done",
+                "ttft_s": 2.6891677950002304,
+                "visible_ttft_s": 3.1168386560002546,
+                "total_s": 6.842767399000422,
+                "output_tokens": 149,
+                "input_tokens": 5136,
+                "tok_s": 35.94758628164741,
+                "content_chunks": 62,
+                "tok_s_e2e": 21.77481584742536
+              }
+            ]
+          }
+        }
+      }
+    },
+    "muse-spark-1.3-contributor-free": {
+      "cli": [
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "response.completed",
+          "ttft_s": 6.195234569999684,
+          "visible_ttft_s": 6.195234569999684,
+          "total_s": 7.3024175609998565,
+          "output_tokens": 710,
+          "input_tokens": 6645,
+          "tok_s": 1138.6680869800928,
+          "content_chunks": 19,
+          "cli_wall_s": 9.449594068999886,
+          "cli_exit": 0,
+          "primary_requests": 1,
+          "tok_s_e2e": 97.22807468473302
+        },
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "response.completed",
+          "ttft_s": 10.784988556999906,
+          "visible_ttft_s": 10.784988556999906,
+          "total_s": 12.231914422000045,
+          "output_tokens": 1176,
+          "input_tokens": 6645,
+          "tok_s": 1273.482041000181,
+          "content_chunks": 18,
+          "cli_wall_s": 15.17208730900029,
+          "cli_exit": 0,
+          "primary_requests": 1,
+          "tok_s_e2e": 96.14194143517493
+        }
+      ],
+      "proxy": [
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "response.completed",
+          "ttft_s": 5.598887727000147,
+          "visible_ttft_s": 5.598887727000147,
+          "total_s": 6.311106510000172,
+          "output_tokens": 740,
+          "input_tokens": 6645,
+          "tok_s": 2695.8913628337887,
+          "content_chunks": 20,
+          "tok_s_e2e": 117.25360661041668
+        },
+        {
+          "status": 200,
+          "rate_headers": {},
+          "terminal": "response.completed",
+          "ttft_s": 8.31577521700001,
+          "visible_ttft_s": 8.31577521700001,
+          "total_s": 9.462329959000272,
+          "output_tokens": 782,
+          "input_tokens": 6645,
+          "tok_s": 1202.7255847290337,
+          "content_chunks": 18,
+          "tok_s_e2e": 82.6434930284994
+        }
+      ],
+      "cli_summary": {
+        "requests": 2,
+        "successful": 2,
+        "ttft_s": 8.490111563499795,
+        "visible_ttft_s": 8.490111563499795,
+        "tok_s": 1206.0750639901369,
+        "total_s": 9.767165991499951,
+        "tok_s_e2e": 96.68500805995397
+      },
+      "proxy_summary": {
+        "requests": 2,
+        "successful": 2,
+        "ttft_s": 6.957331472000078,
+        "visible_ttft_s": 6.957331472000078,
+        "tok_s": 1949.308473781411,
+        "total_s": 7.886718234500222,
+        "tok_s_e2e": 99.94854981945804
+      },
+      "cli_request_contract": {
+        "path": "/v1/responses",
+        "body_fields": [
+          "include",
+          "input",
+          "instructions",
+          "max_output_tokens",
+          "model",
+          "prompt_cache_key",
+          "store",
+          "stream",
+          "tools"
+        ],
+        "header_names": [
+          "accept",
+          "b3",
+          "content-type",
+          "traceparent",
+          "user-agent",
+          "x-opencode-client",
+          "x-opencode-org-id",
+          "x-opencode-project",
+          "x-opencode-session",
+          "x-opencode-session-id",
+          "x-session-affinity",
+          "x-session-id"
+        ],
+        "tools": [
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "shell",
+          "skill",
+          "subagent",
+          "webfetch",
+          "websearch",
+          "write",
+          "execute"
+        ]
+      },
+      "tool_reference_matches": {
+        "read": true,
+        "shell": true
+      },
+      "concurrency": {
+        "2": {
+          "cli_wire": {
+            "summary": {
+              "requests": 2,
+              "successful": 2,
+              "ttft_s": 14.905603449000182,
+              "visible_ttft_s": 14.905603449000182,
+              "tok_s": 912.1529903015673,
+              "total_s": 16.30449654400013,
+              "tok_s_e2e": 49.97170826291337
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 13.375207764000152,
+                "visible_ttft_s": 13.375207764000152,
+                "total_s": 14.765634807999959,
+                "output_tokens": 726,
+                "input_tokens": 6645,
+                "tok_s": 772.0973413620289,
+                "content_chunks": 18,
+                "tok_s_e2e": 49.16822130848423
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 16.435999134000213,
+                "visible_ttft_s": 16.435999134000213,
+                "total_s": 17.843358280000302,
+                "output_tokens": 906,
+                "input_tokens": 6645,
+                "tok_s": 1052.2086392411056,
+                "content_chunks": 18,
+                "tok_s_e2e": 50.7751952173425
+              }
+            ]
+          },
+          "proxy": {
+            "summary": {
+              "requests": 2,
+              "successful": 2,
+              "ttft_s": 7.850584579999804,
+              "visible_ttft_s": 7.850584579999804,
+              "tok_s": 813.7876206053264,
+              "total_s": 9.333587923499863,
+              "tok_s_e2e": 84.88365309249158
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 8.067159819999688,
+                "visible_ttft_s": 8.067159819999688,
+                "total_s": 9.692736693999905,
+                "output_tokens": 802,
+                "input_tokens": 6645,
+                "tok_s": 726.0283715935493,
+                "content_chunks": 19,
+                "tok_s_e2e": 82.74236939671147
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 7.6340093399999205,
+                "visible_ttft_s": 7.6340093399999205,
+                "total_s": 8.974439152999821,
+                "output_tokens": 781,
+                "input_tokens": 6645,
+                "tok_s": 901.5468696171035,
+                "content_chunks": 18,
+                "tok_s_e2e": 87.02493678827169
+              }
+            ]
+          }
+        },
+        "4": {
+          "cli_wire": {
+            "summary": {
+              "requests": 4,
+              "successful": 4,
+              "ttft_s": 7.6967862779999905,
+              "visible_ttft_s": 7.6967862779999905,
+              "tok_s": 849.9637618866386,
+              "total_s": 9.222459319000109,
+              "tok_s_e2e": 78.16841626351564
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 7.988480610999886,
+                "visible_ttft_s": 7.988480610999886,
+                "total_s": 9.584126947000186,
+                "output_tokens": 744,
+                "input_tokens": 6645,
+                "tok_s": 848.1738882876205,
+                "content_chunks": 19,
+                "tok_s_e2e": 77.62835406023818
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 8.257446831999914,
+                "visible_ttft_s": 8.257446831999914,
+                "total_s": 9.729599905999748,
+                "output_tokens": 745,
+                "input_tokens": 6645,
+                "tok_s": 931.2176122517966,
+                "content_chunks": 18,
+                "tok_s_e2e": 76.57046612375052
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 6.787135472000045,
+                "visible_ttft_s": 6.787135472000045,
+                "total_s": 7.966104951000034,
+                "output_tokens": 627,
+                "input_tokens": 6645,
+                "tok_s": 851.7536354856569,
+                "content_chunks": 17,
+                "tok_s_e2e": 78.7084784667931
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 7.405091945000095,
+                "visible_ttft_s": 7.405091945000095,
+                "total_s": 8.860791691000031,
+                "output_tokens": 712,
+                "input_tokens": 6645,
+                "tok_s": 721.7281711319414,
+                "content_chunks": 19,
+                "tok_s_e2e": 80.3539937320932
+              }
+            ]
+          },
+          "proxy": {
+            "summary": {
+              "requests": 4,
+              "successful": 4,
+              "ttft_s": 17.590679969500115,
+              "visible_ttft_s": 17.590679969500115,
+              "tok_s": 907.0307227172689,
+              "total_s": 19.201880024000047,
+              "tok_s_e2e": 43.563007586554434
+            },
+            "rows": [
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 17.280342388000008,
+                "visible_ttft_s": 17.280342388000008,
+                "total_s": 18.786064302999876,
+                "output_tokens": 818,
+                "input_tokens": 6645,
+                "tok_s": 994.7814857760808,
+                "content_chunks": 18,
+                "tok_s_e2e": 43.54291493984595
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 8.321587639999962,
+                "visible_ttft_s": 8.321587639999962,
+                "total_s": 9.717500995999671,
+                "output_tokens": 797,
+                "input_tokens": 6645,
+                "tok_s": 819.2799596584568,
+                "content_chunks": 20,
+                "tok_s_e2e": 82.01697126947502
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 17.901017551000223,
+                "visible_ttft_s": 17.901017551000223,
+                "total_s": 19.61769574500022,
+                "output_tokens": 855,
+                "input_tokens": 6645,
+                "tok_s": 1158.6858234725046,
+                "content_chunks": 18,
+                "tok_s_e2e": 43.58310023326292
+              },
+              {
+                "status": 200,
+                "rate_headers": {},
+                "terminal": "response.completed",
+                "ttft_s": 25.75258199100017,
+                "visible_ttft_s": 25.75258199100017,
+                "total_s": 27.08226040699992,
+                "output_tokens": 681,
+                "input_tokens": 6645,
+                "tok_s": 761.6017265369064,
+                "content_chunks": 18,
+                "tok_s_e2e": 25.145611546663318
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "method": "Actual CLI through loopback measuring relay; exact primary body replayed to proxy. TTFT includes first reasoning or text; visible_ttft is text only. tok/s uses upstream output tokens over first-to-last text/reasoning delta. CLI startup is reported separately. No quota exhaustion. The measuring relay uses Python requests upstream; these are CLI-generated request-contract timings, not native CLI TLS transport timings. Whole-request throughput includes upstream-reported hidden reasoning tokens; stream-window tok_s must not be interpreted as Muse decode speed."
+}

@@ -1,27 +1,20 @@
 package server
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
-	// fallbackOCVersion is used only when no installed opencode binary reports
-	// a stable version (missing binary, probe failure, or a prerelease-only
-	// install). Kept current with the installed release so a broken probe
-	// still sends a plausible version to Zen's free-tier gate, which validates
-	// the semver shape.
-	//
-	// Runtime detection is preferred and is what normally runs: detectOCVersion
-	// probes `/usr/bin/opencode`, `opencode1`, then `opencode` with
-	// `--version` and takes the first stable semver, so upgrading opencode
-	// needs no code change here. Verified on 2026-10-02 to emit
-	// `opencode/latest/2.0.22/cli` for an installed v2.0.22; only this
-	// fallback constant needed bumping.
-	fallbackOCVersion = "2.0.22"
+	// Fallback matches the audited source release in proxy/opencode/manifest.json.
+	// Never advertise an older client than the bundled request contract.
+	fallbackOCVersion = "2.0.29"
 	// The current OpenCode installation format is
 	// opencode/<channel>/<version>/<client>. Zen's free-tier gate validates
 	// this shape, so do not append the old AI SDK suffix here.
@@ -30,9 +23,10 @@ const (
 )
 
 var (
-	ocVersionOnce sync.Once
-	ocVersion     string
-	versionRe     = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
+	ocVersionMu      sync.Mutex
+	ocVersionChecked time.Time
+	ocVersion        string
+	versionRe        = regexp.MustCompile(`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?`)
 )
 
 // ocUA returns the current stock OpenCode installation User-Agent, for
@@ -40,9 +34,12 @@ var (
 // channel/version/client shape as well as the semver, so this must not use
 // the older "opencode/<version> ai-sdk/..." form.
 func ocUA() string {
-	ocVersionOnce.Do(func() {
+	ocVersionMu.Lock()
+	defer ocVersionMu.Unlock()
+	if ocVersion == "" || time.Since(ocVersionChecked) >= 5*time.Minute {
 		ocVersion = detectOCVersion()
-	})
+		ocVersionChecked = time.Now()
+	}
 	return "opencode/" + zenUAChannel + "/" + ocVersion + "/" + zenUAClient
 }
 
@@ -66,9 +63,35 @@ func isStableOCVersion(v string) bool {
 	return true
 }
 
-// detectOCVersion probes the installed opencode binaries and uses the first
-// stable release. Preview/dev builds are skipped; fallbackOCVersion is
-// returned when no stable version is found.
+// newerStableOCVersion compares numeric release components, not lexicographic
+// strings (2.0.29 is newer than 2.0.9). Invalid/prerelease probes are ignored.
+func newerStableOCVersion(current, candidate string) string {
+	if !isStableOCVersion(candidate) || parseOCVersion(candidate) != candidate {
+		return current
+	}
+	a, b := strings.Split(current, "."), strings.Split(candidate, ".")
+	if len(a) != 3 || len(b) != 3 {
+		return current
+	}
+	for i := range a {
+		x, errA := strconv.Atoi(a[i])
+		y, errB := strconv.Atoi(b[i])
+		if errA != nil || errB != nil {
+			return current
+		}
+		if y > x {
+			return candidate
+		}
+		if y < x {
+			return current
+		}
+	}
+	return current
+}
+
+// Probe with a deadline and select the newest stable installed release or the
+// audited compatibility version, whichever is newer. Re-probed every 5 minutes
+// so upgrading the installed CLI does not require restarting this service.
 func detectOCVersion() string {
 	candidates := [][]string{
 		{"/usr/bin/opencode", "--version"},
@@ -83,14 +106,15 @@ func detectOCVersion() string {
 			[]string{home + "/.local/bin/opencode", "--version"},
 		)
 	}
+	version := fallbackOCVersion
 	for _, c := range candidates {
-		out, err := exec.Command(c[0], c[1:]...).Output()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		out, err := exec.CommandContext(ctx, c[0], c[1:]...).Output()
+		cancel()
 		if err != nil {
 			continue
 		}
-		if v := parseOCVersion(strings.TrimSpace(string(out))); isStableOCVersion(v) {
-			return v
-		}
+		version = newerStableOCVersion(version, parseOCVersion(strings.TrimSpace(string(out))))
 	}
-	return fallbackOCVersion
+	return version
 }

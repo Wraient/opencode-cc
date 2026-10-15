@@ -19,7 +19,7 @@ import (
 // Default values used when nothing else is configured.
 const (
 	DefaultListenAddr      = ":8787"
-	DefaultUpstreamBase    = "https://opencode.ai/zen"
+	DefaultUpstreamBase    = "https://opencode.ai/inference"
 	DefaultDefaultModel    = "glm-4.6"
 	DefaultDataDir         = "data"
 	DefaultConfigFile      = "config.json"

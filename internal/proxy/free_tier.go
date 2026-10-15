@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,10 +21,10 @@ func IsFreeModel(model string) bool {
 }
 
 // PrepareFreeChatBody adapts an OpenAI Chat Completions request to Zen's
-// free-tier gate. The public API accepts ordinary non-streaming requests,
-// while Zen's free lane currently requires the same streaming/tool shape as
-// the official OpenCode client. The marker tools are deliberately described
-// as internal compatibility tools; callers' real tools remain untouched.
+// free-tier request contract. The public API accepts non-streaming requests;
+// upstream uses streaming and the versioned OpenCode tool definitions.
+// Existing client tools remain byte-for-byte intact. Added tools are never
+// executed by this proxy and must be filtered against client declarations.
 func PrepareFreeChatBody(body []byte) ([]byte, error) {
 	return prepareFreeBody(body, "chat")
 }
@@ -104,14 +105,39 @@ func freeToolName(raw json.RawMessage, format string) (string, bool) {
 	return "", false
 }
 
+//go:embed opencode/tools.json
+var openCodeToolsJSON []byte
+
+// OpenCode tool definitions are captured from the released CLI and checked
+// against the pinned source. See opencode/manifest.json and opencode/LICENSE.
+// Empty schemas are not equivalent: they were rejected with FreeTierError
+// while the same request with these definitions succeeded on 2026-10-15.
 func freeMarkerTool(name, format string) json.RawMessage {
-	description := "Internal OpenCode free-tier compatibility marker; do not call."
-	parameters := `{"type":"object","properties":{}}`
-	var tool string
-	if format == "responses" {
-		tool = fmt.Sprintf(`{"type":"function","name":%q,"description":%q,"parameters":%s}`, name, description, parameters)
-	} else {
-		tool = fmt.Sprintf(`{"type":"function","function":{"name":%q,"description":%q,"parameters":%s}}`, name, description, parameters)
+	var definitions []map[string]json.RawMessage
+	if err := json.Unmarshal(openCodeToolsJSON, &definitions); err != nil {
+		panic("invalid embedded OpenCode tool definitions: " + err.Error())
 	}
-	return json.RawMessage(tool)
+	for _, definition := range definitions {
+		var candidate string
+		_ = json.Unmarshal(definition["name"], &candidate)
+		if candidate != name {
+			continue
+		}
+		var tool map[string]any
+		if format == "responses" {
+			tool = make(map[string]any, len(definition)+1)
+			for key, value := range definition {
+				tool[key] = value
+			}
+			tool["type"] = "function"
+		} else {
+			tool = map[string]any{"type": "function", "function": definition}
+		}
+		encoded, err := json.Marshal(tool)
+		if err != nil {
+			panic(err)
+		}
+		return encoded
+	}
+	panic("missing embedded OpenCode tool: " + name)
 }

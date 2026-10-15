@@ -1,0 +1,11 @@
+{
+  "version": "2.0.29",
+  "commit": "042d0832f5f3a73eaa039a58a7d565776f6d4290",
+  "repository": "https://github.com/anomalyco/opencode",
+  "source_sha256": {
+    "packages/core/src/tool/plugin/shell.ts": "043dbf4b6c90a4ce2c44d7bbfb2bc62f8bfcc7b0f8f244286e5bc4f2328162ec",
+    "packages/core/src/tool/plugin/read.ts": "c8ab44d68ff8a9a175078c3ed6e4fc651e37b8a50eeac4ab12476952d299da97",
+    "packages/core/src/session/model-request.ts": "53ba2f1d42e861a180f2673351338dd6252d34fedc4fc7ec6120e202a13a84cb",
+    "packages/schema/src/identifier.ts": "87e9921d97a86544ed0b75170a32feecab8973774661f7001ea7f0ce615c38bf"
+  }
+}

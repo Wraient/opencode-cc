@@ -1,0 +1,16 @@
+{
+  "health_status": 200,
+  "message_status": 200,
+  "message_text": "LIVE-OK",
+  "binary_sha256": "852d71805e1e98f0b2510590c2a435819d9d06c0f15d70bd4b58a829f3993f11",
+  "backup": "/home/wraient/.local/bin/opencode-cc.bak-20261015-175621",
+  "deployed_at": "2026-10-15T17:56:26.271310",
+  "muse_message_status": 200,
+  "muse_message_text": "LIVE-MUSE-OK",
+  "upstream": "https://opencode.ai/inference",
+  "config_backup": "/home/wraient/data/config.json.bak-20261015-175855",
+  "config_smoke_status": 200,
+  "config_smoke_text": "LIVE-INFERENCE-OK",
+  "v2_muse_smoke_status": 200,
+  "v2_muse_smoke_text": "LIVE-V2-MUSE-OK"
+}
