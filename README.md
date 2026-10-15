@@ -659,6 +659,14 @@ covers the session gate, the tool filter, and the SSE framing contract.
 See `~/.config/opencode-cc/README.md`, `~/.claude/README.md`, and
 `~/.grok/README.md` for service, backup, and troubleshooting details.
 
+## Optional OpenCode client retry policy
+
+The [native retry plugin](contrib/opencode/rate-limit-retry/README.md) honors
+`Retry-After`, persists account/model cooldowns, bounds retries, and avoids
+inserting synthetic user messages. It includes unit tests and an isolated
+real-CLI recovery harness verified with OpenCode v2.0.24 and v2.0.29. Provider
+quotas and cache expiry still apply; the plugin controls recovery behavior.
+
 ## License
 
 MIT
