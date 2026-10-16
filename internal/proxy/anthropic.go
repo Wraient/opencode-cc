@@ -18,6 +18,7 @@ type AnthropicRequest struct {
 	Tools       []AnthropicTool     `json:"tools,omitempty"`
 	ToolChoice  AnthropicToolChoice `json:"tool_choice,omitempty"`
 	Thinking    *AnthropicThinking  `json:"thinking,omitempty"`
+	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
 	Metadata    jsonRawMessage      `json:"metadata,omitempty"`
 	// Other rarely-used fields are ignored.
 }
@@ -39,6 +40,7 @@ func (r AnthropicRequest) MarshalJSON() ([]byte, error) {
 		Tools       []AnthropicTool      `json:"tools,omitempty"`
 		ToolChoice  *AnthropicToolChoice `json:"tool_choice,omitempty"`
 		Thinking    *AnthropicThinking   `json:"thinking,omitempty"`
+		OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
 		Metadata    jsonRawMessage       `json:"metadata,omitempty"`
 	}
 	out := request{
@@ -52,6 +54,7 @@ func (r AnthropicRequest) MarshalJSON() ([]byte, error) {
 		Stream:      r.Stream,
 		Tools:       r.Tools,
 		Thinking:    r.Thinking,
+		OutputConfig: r.OutputConfig,
 		Metadata:    r.Metadata,
 	}
 	if len(r.System.Blocks) > 0 {
@@ -277,6 +280,13 @@ type AnthropicThinking struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 	// Effort carries newer clients' named thinking level (e.g. "max").
 	// Unknown names clamp to the model's maximum, never fail.
+	Effort string `json:"effort,omitempty"`
+}
+
+// AnthropicOutputConfig carries newer clients' output options. The effort
+// level (e.g. "max" under the effort-2025-11-24 beta) lives here rather than
+// in thinking, which only carries type/display.
+type AnthropicOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
 

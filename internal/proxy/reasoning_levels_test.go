@@ -67,6 +67,33 @@ func TestResolveBridgeEffort(t *testing.T) {
 	}
 }
 
+func TestResolveBridgeEffortWithOutputConfig(t *testing.T) {
+	// Current Claude Code wire shape: bare type/display thinking plus the
+	// level in output_config.effort (effort-2025-11-24 beta).
+	cases := []struct {
+		name     string
+		thinking *AnthropicThinking
+		output   string
+		levels   []string
+		def      string
+		expect   string
+	}{
+		{"nil thinking with output max clamps to xhigh", nil, "max", testMuseLevels, "minimal", "xhigh"},
+		{"nil thinking with output medium", nil, "medium", testMuseLevels, "minimal", "medium"},
+		{"nil thinking without output uses default", nil, "", testMuseLevels, "xhigh", "xhigh"},
+		{"adaptive display-only with output max", &AnthropicThinking{Type: "adaptive"}, "max", testMuseLevels, "minimal", "xhigh"},
+		{"enabled display-only with output medium", &AnthropicThinking{Type: "enabled"}, "medium", testMuseLevels, "minimal", "medium"},
+		{"thinking effort wins over output", &AnthropicThinking{Type: "enabled", Effort: "low"}, "max", testMuseLevels, "minimal", "low"},
+		{"adaptive bare without output stays low", &AnthropicThinking{Type: "adaptive"}, "", testMuseLevels, "minimal", "low"},
+		{"output unknown clamps to top", &AnthropicThinking{Type: "adaptive"}, "ultracode", testMuseLevels, "minimal", "xhigh"},
+	}
+	for _, c := range cases {
+		if got := ResolveBridgeEffortWithOutputConfig(c.thinking, c.output, c.levels, c.def); got != c.expect {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.expect)
+		}
+	}
+}
+
 func TestParseExpectedEfforts(t *testing.T) {
 	variant := "Error from provider (Console): Upstream request failed: [invalid_request_error] `reasoning.effort`: unknown variant `ultra`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`"
 	if got := ParseExpectedEfforts(variant); !reflect.DeepEqual(got, []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}) {

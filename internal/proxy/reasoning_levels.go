@@ -86,7 +86,9 @@ func indexFold(list []string, want string) int {
 // ResolveBridgeEffort resolves an Anthropic thinking config to a Responses
 // effort name over levels (ordered low to high):
 //
-//   - absent thinking -> defaultEffort (fast path; usually "minimal"),
+//   - absent thinking -> defaultEffort (fast path; usually "minimal"), unless
+//     outputConfigEffort names an explicit level (newer clients send the
+//     level in output_config.effort instead of thinking),
 //   - disabled (or unknown) thinking -> the practical minimum ("minimal"
 //     when present),
 //   - enabled/adaptive/auto thinking with an explicit effort name ->
@@ -100,6 +102,18 @@ func indexFold(list []string, want string) int {
 // defaultEffort is validated against levels (garbage falls back to minimal,
 // else levels[0]); an empty levels list falls back to DefaultReasoningLevels.
 func ResolveBridgeEffort(thinking *AnthropicThinking, levels []string, defaultEffort string) string {
+	return resolveBridgeEffort(thinking, "", levels, defaultEffort)
+}
+
+// ResolveBridgeEffortWithOutputConfig is ResolveBridgeEffort plus the newer
+// output_config.effort channel: when thinking carries no explicit effort or
+// budget (type/display only, as current Claude Code sends), the client's
+// output_config.effort level is honored instead of collapsing to "low".
+func ResolveBridgeEffortWithOutputConfig(thinking *AnthropicThinking, outputConfigEffort string, levels []string, defaultEffort string) string {
+	return resolveBridgeEffort(thinking, outputConfigEffort, levels, defaultEffort)
+}
+
+func resolveBridgeEffort(thinking *AnthropicThinking, outputConfigEffort string, levels []string, defaultEffort string) string {
 	if len(levels) == 0 {
 		levels = DefaultReasoningLevels
 	}
@@ -111,12 +125,18 @@ func ResolveBridgeEffort(thinking *AnthropicThinking, levels []string, defaultEf
 		}
 	}
 	if thinking == nil {
+		if strings.TrimSpace(outputConfigEffort) != "" {
+			return ClampEffort(outputConfigEffort, levels)
+		}
 		return def
 	}
 	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
 	case "enabled", "adaptive", "auto":
 		if strings.TrimSpace(thinking.Effort) != "" {
 			return ClampEffort(thinking.Effort, levels)
+		}
+		if strings.TrimSpace(outputConfigEffort) != "" {
+			return ClampEffort(outputConfigEffort, levels)
 		}
 		return ClampEffort(budgetBand(thinking.BudgetTokens), levels)
 	default:

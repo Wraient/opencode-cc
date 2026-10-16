@@ -62,9 +62,16 @@ func ConvertAnthropicToResponsesBody(in *AnthropicRequest, targetModel string, o
 	// Reasoning effort: absent thinking means a plain tool-loop turn, which
 	// runs ~4x faster on "minimal" than the upstream default (1.6s vs ~7s
 	// on a trivial prompt, 2026-09-15 probe). Explicit thinking maps across
-	// the model's real scale (names exact, unknown clamped to max).
+	// the model's real scale (names exact, unknown clamped to max). Newer
+	// clients (effort-2025-11-24 beta) send the level in output_config.effort
+	// with a bare type/display thinking block; that wins over the default so
+	// the user's chosen level always reaches upstream, clamped to the model.
+	var outputEffort string
+	if in.OutputConfig != nil {
+		outputEffort = in.OutputConfig.Effort
+	}
 	body["reasoning"] = map[string]any{
-		"effort": ResolveBridgeEffort(in.Thinking, opts.EffortLevels, opts.DefaultEffort),
+		"effort": ResolveBridgeEffortWithOutputConfig(in.Thinking, outputEffort, opts.EffortLevels, opts.DefaultEffort),
 	}
 	if opts.PromptCacheKey != "" {
 		body["prompt_cache_key"] = opts.PromptCacheKey

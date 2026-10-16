@@ -294,8 +294,60 @@ func TestConvertAnthropicPromptCacheKey(t *testing.T) {
 	}
 }
 
-func TestConvertAnthropicReasoningTopBands(t *testing.T) {
+func TestConvertAnthropicOutputConfigEffort(t *testing.T) {
+	// Live claude-cli/2.1.x wire shape: bare adaptive thinking plus the
+	// level in output_config.effort. max must reach upstream clamped to
+	// xhigh on muse levels, not collapse to low.
 	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
+	muse := []string{"minimal", "low", "medium", "high", "xhigh"}
+	effortOf := func(thinking *AnthropicThinking, output *AnthropicOutputConfig, levels []string, def string) string {
+		t.Helper()
+		body, err := ConvertAnthropicToResponsesBody(&AnthropicRequest{
+			Model: "m", MaxTokens: 64, Messages: msg, Thinking: thinking, OutputConfig: output,
+		}, "m", BridgeOptions{EffortLevels: levels, DefaultEffort: def})
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		var req struct {
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return req.Reasoning.Effort
+	}
+	adaptive := &AnthropicThinking{Type: "adaptive"}
+	if got := effortOf(adaptive, &AnthropicOutputConfig{Effort: "max"}, muse, "minimal"); got != "xhigh" {
+		t.Errorf("output_config max must clamp to xhigh, got %q", got)
+	}
+	if got := effortOf(adaptive, &AnthropicOutputConfig{Effort: "medium"}, muse, "minimal"); got != "medium" {
+		t.Errorf("output_config medium must pass through, got %q", got)
+	}
+	if got := effortOf(nil, &AnthropicOutputConfig{Effort: "max"}, muse, "minimal"); got != "xhigh" {
+		t.Errorf("nil thinking with output max must clamp to xhigh, got %q", got)
+	}
+	// Thinking effort still wins over output_config when both name a level.
+	if got := effortOf(&AnthropicThinking{Type: "enabled", Effort: "low"}, &AnthropicOutputConfig{Effort: "max"}, muse, "minimal"); got != "low" {
+		t.Errorf("thinking effort must win, got %q", got)
+	}
+
+	// The exact JSON Claude Code sends must decode into OutputConfig.
+	var decoded AnthropicRequest
+	wire := `{"model":"m","max_tokens":32000,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"},"messages":[{"role":"user","content":"hi"}]}`
+	if err := json.Unmarshal([]byte(wire), &decoded); err != nil {
+		t.Fatalf("decode wire: %v", err)
+	}
+	if decoded.OutputConfig == nil || decoded.OutputConfig.Effort != "max" {
+		t.Fatalf("output_config.effort not decoded: %+v", decoded.OutputConfig)
+	}
+	if got := effortOf(decoded.Thinking, decoded.OutputConfig, muse, "minimal"); got != "xhigh" {
+		t.Errorf("wire shape must land xhigh, got %q", got)
+	}
+}
+
+func TestConvertAnthropicReasoningTopBands(t *testing.T) {	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
 	muse := []string{"minimal", "low", "medium", "high", "xhigh"}
 	effortOf := func(thinking *AnthropicThinking, levels []string, def string) string {
 		t.Helper()
