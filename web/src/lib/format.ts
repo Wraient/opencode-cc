@@ -59,6 +59,75 @@ export function prettyJson(s: string): string {
   try {
     return JSON.stringify(JSON.parse(s), null, 2);
   } catch {
-    return s;
+    return salvageJson(s);
   }
+}
+
+// salvageJson best-effort formats truncated or slightly-damaged JSON for the
+// log drawer. Stored bodies are cut at MaxBodyLogBytes (usually mid-string,
+// with a trailing … marker), so JSON.parse fails exactly when the body is
+// biggest and hardest to read raw. This walks the text token-aware — strings
+// (with escapes) pass through untouched, structural characters get newlines +
+// indentation — and stops gracefully at the cut point instead of inventing
+// closing brackets. Plaintext placeholders like "[streamed]" pass through.
+function salvageJson(s: string): string {
+  // Bare placeholder text, not JSON with damage: leave it alone. Same for
+  // anything that never opened a JSON structure — the tolerant walk below
+  // only makes sense on inputs that start like JSON.
+  const trimmed = s.trim();
+  if (/^\[[^\[\]{}\"]+\]$/.test(trimmed)) return s;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return s;
+  // The backend truncation marker carries no structure: drop it, then retry
+  // the canonical path in case the cut landed on a clean boundary.
+  const uncut = s.replace(/…\s*$/, "");
+  try {
+    return JSON.stringify(JSON.parse(uncut), null, 2);
+  } catch {
+    /* fall through to the tolerant walk */
+  }
+  let out = "";
+  let indent = 0;
+  let inStr = false;
+  let esc = false;
+  const pad = () => "\n" + "  ".repeat(indent);
+  for (const c of uncut) {
+    if (inStr) {
+      out += c;
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    switch (c) {
+      case '"':
+        inStr = true;
+        out += c;
+        break;
+      case "{":
+      case "[":
+        out += c;
+        indent++;
+        out += pad();
+        break;
+      case "}":
+      case "]":
+        indent = Math.max(0, indent - 1);
+        out += pad() + c;
+        break;
+      case ",":
+        out += c + pad();
+        break;
+      case ":":
+        out += ": ";
+        break;
+      default:
+        // Outside strings, whitespace is re-flowed and raw control
+        // characters (the usual parse-killer in tool-result text) are
+        // dropped; string content above passes through byte-identical.
+        if (c === " " || c === "\n" || c === "\r" || c === "\t") break;
+        if (c < " ") break;
+        out += c;
+    }
+  }
+  return out;
 }

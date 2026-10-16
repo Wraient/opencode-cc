@@ -32,7 +32,7 @@ export default function Logs() {
           r.target_model.toLowerCase().includes(filter.toLowerCase()) ||
           r.incoming_model.toLowerCase().includes(filter.toLowerCase()) ||
           String(r.status).includes(filter) ||
-          r.error.toLowerCase().includes(filter.toLowerCase())
+          (r.error || "").toLowerCase().includes(filter.toLowerCase())
       )
     : rows;
 
@@ -68,6 +68,7 @@ export default function Logs() {
                   <th className="font-medium px-4 py-3">Status</th>
                   <th className="font-medium px-4 py-3">Latency</th>
                   <th className="font-medium px-4 py-3">Token</th>
+                  <th className="font-medium px-4 py-3">Effort</th>
                   <th className="font-medium px-4 py-3">Stop reason</th>
                 </tr>
               </thead>
@@ -120,6 +121,13 @@ export default function Logs() {
                           </div>
                         ) : (
                           "—"
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.effort ? (
+                          <Badge tone="violet">{r.effort}</Badge>
+                        ) : (
+                          <span className="text-slate-600">—</span>
                         )}
                       </td>
                       <td className="px-4 py-3">
@@ -210,6 +218,7 @@ function DetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
                   tone={cacheHitRate > 0 ? "text-accent-green" : "text-slate-200"}
                 />
                 <Field label="Stop reason" value={row.stop_reason || "—"} mono />
+                <Field label="Reasoning effort" value={row.effort || "—"} mono accent={!!row.effort} />
                 <Field label="Streaming" value={row.stream ? "Yes" : "No"} mono />
               </div>
 
@@ -284,8 +293,10 @@ function TabBtn({
 }
 
 function CodeBlock({ children }: { children: React.ReactNode }) {
+  // whitespace-pre + overflow-auto: long JSON lines scroll horizontally and
+  // never wrap, for both the Request and Response tabs.
   return (
-    <pre className="rounded-xl bg-ink-950/80 border border-white/[0.05] p-4 text-xs font-mono text-slate-300 overflow-auto max-h-[40vh] leading-relaxed">
+    <pre className="rounded-xl bg-ink-950/80 border border-white/[0.05] p-4 text-xs font-mono text-slate-300 overflow-auto max-h-[40vh] leading-relaxed whitespace-pre">
       <code>{children}</code>
     </pre>
   );

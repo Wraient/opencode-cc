@@ -78,6 +78,40 @@ func TestEffortLevelsCacheDemote(t *testing.T) {
 	}
 }
 
+func TestEffortForRequest(t *testing.T) {
+	srv := New(nil, nil)
+	const target = "muse-spark-1.3-contributor-free"
+
+	// Bridge (/v1/messages): the live Claude Code wire shape — bare adaptive
+	// thinking block plus output_config.effort — must surface the clamped
+	// level, exactly like the bridge builder sends upstream.
+	bridge := []byte(`{"model":"m","thinking":{"type":"adaptive"},"output_config":{"effort":"max"},"messages":[]}`)
+	if got := srv.effortForRequest("/v1/messages", target, bridge); got != "xhigh" {
+		t.Errorf("bridge output_config max must clamp to xhigh, got %q", got)
+	}
+	// Bridge thinking.effort wins over output_config when both are present.
+	both := []byte(`{"model":"m","thinking":{"type":"enabled","effort":"high"},"output_config":{"effort":"max"},"messages":[]}`)
+	if got := srv.effortForRequest("/v1/messages", target, both); got != "high" {
+		t.Errorf("thinking.effort must win, got %q", got)
+	}
+	// Passthrough (/v1/responses): client level clamped into target scale.
+	pass := []byte(`{"model":"m","reasoning":{"effort":"ultra"},"input":[]}`)
+	if got := srv.effortForRequest("/v1/responses", target, pass); got != "xhigh" {
+		t.Errorf("passthrough ultra must clamp to xhigh, got %q", got)
+	}
+	// Passthrough without an effort has no level to show.
+	if got := srv.effortForRequest("/v1/responses", target, []byte(`{"model":"m","input":[]}`)); got != "" {
+		t.Errorf("passthrough without effort must be empty, got %q", got)
+	}
+	// Non-effort paths and empty bodies show "—".
+	if got := srv.effortForRequest("/v1/chat/completions", target, bridge); got != "" {
+		t.Errorf("chat path must be empty, got %q", got)
+	}
+	if got := srv.effortForRequest("/v1/messages", target, nil); got != "" {
+		t.Errorf("empty body must be empty, got %q", got)
+	}
+}
+
 func TestClampPassthroughEffort(t *testing.T) {
 	srv := New(nil, nil)
 	in := []byte(`{"model":"m","reasoning":{"effort":"ultra"},"input":[]}`)

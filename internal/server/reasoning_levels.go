@@ -189,6 +189,56 @@ func (s *Server) clampPassthroughEffort(upBody []byte, targetModel, incomingMode
 	return fixed
 }
 
+// effortForRequest derives the reasoning-effort level actually sent upstream
+// for a logged request, so the Request Logs table shows each row's own level.
+// It mirrors the resolution each serving path applies:
+//
+//   - bridge (/v1/messages to a Responses-native target): the same
+//     ResolveBridgeEffortWithOutputConfig over the client's thinking /
+//     output_config.effort the builder uses (one-shot clamp retries excluded:
+//     they log their own journal line);
+//   - Responses passthrough (/v1/responses): the client's reasoning.effort
+//     clamped into the target's scale, exactly like clampPassthroughEffort;
+//   - anything else (chat, native Anthropic): "" — no effort concept there.
+//
+// Best-effort: on any surprise it returns "" and the row shows "—".
+func (s *Server) effortForRequest(path, targetModel string, reqBody []byte) string {
+	if len(reqBody) == 0 {
+		return ""
+	}
+	if path == "/v1/responses" || strings.HasPrefix(path, "/v1/responses/") {
+		effort, ok := proxy.ExtractRequestEffort(reqBody)
+		if !ok {
+			return ""
+		}
+		return proxy.ClampEffort(effort, s.levelsForModel(targetModel))
+	}
+	if path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/") {
+		if !proxy.IsResponsesNativeModel(targetModel) {
+			return ""
+		}
+		// Probe only the two fields the bridge reads; the full body can
+		// carry megabytes of tool-result images.
+		var probe struct {
+			Thinking     *proxy.AnthropicThinking     `json:"thinking"`
+			OutputConfig *proxy.AnthropicOutputConfig `json:"output_config"`
+		}
+		if err := json.Unmarshal(reqBody, &probe); err != nil {
+			return ""
+		}
+		var outputEffort string
+		if probe.OutputConfig != nil {
+			outputEffort = probe.OutputConfig.Effort
+		}
+		var def string
+		if s != nil && s.cfg != nil {
+			def = s.cfg.Snapshot().BridgeDefaultEffort
+		}
+		return proxy.ResolveBridgeEffortWithOutputConfig(probe.Thinking, outputEffort, s.levelsForModel(targetModel), def)
+	}
+	return ""
+}
+
 func saneEffortLevels(lv []string) bool {
 	if len(lv) == 0 || len(lv) > 16 {
 		return false

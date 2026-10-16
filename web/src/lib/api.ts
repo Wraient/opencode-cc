@@ -50,6 +50,7 @@ export interface LogRow {
   cache_creation_input_tokens: number;
   stop_reason: string;
   error: string;
+  effort: string;
   req_body?: string;
   resp_body?: string;
 }

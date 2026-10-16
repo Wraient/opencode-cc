@@ -81,6 +81,12 @@ func (s *Server) proxyAnthropicViaResponses(
 		}
 		upstreamStream = true
 	}
+	// Stamp the effort actually sent upstream so the logged row matches it
+	// exactly (the relays only see the client body). Updated again below if
+	// an effort-clamp retry rewrites it.
+	if eff, ok := proxy.ExtractRequestEffort(upBody); ok {
+		r = r.WithContext(withEffort(r.Context(), eff))
+	}
 
 	select {
 	case museSparkUpstreamSlots <- struct{}{}:
@@ -124,9 +130,16 @@ func (s *Server) proxyAnthropicViaResponses(
 		incomingModel, targetModel, areq.Stream, start); ok {
 		resp, upBody = newResp, newBody
 	}
-	if newResp, _, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
+	if newResp, newBody, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
 		incomingModel, targetModel, areq.Stream, start); ok {
-		resp = newResp
+		resp, upBody = newResp, newBody
+		// The retry clamped reasoning.effort after the client body was
+		// captured: stamp the value actually sent so the logged row (which
+		// only sees the client body) stays accurate. No retry means the
+		// helpers recompute the identical value from the client body.
+		if eff, ok := proxy.ExtractRequestEffort(newBody); ok {
+			r = r.WithContext(withEffort(r.Context(), eff))
+		}
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -135,16 +148,23 @@ func (s *Server) proxyAnthropicViaResponses(
 	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	// resample re-POSTs the identical upstream request (same body, same
-	// headers) for the toolless-resample guard: one extra sample when a
-	// completed turn declares tools but returns none. Timeouts/5xx get the
-	// same single retry as the first attempt; anything else is the
-	// caller's verdict to make.
-	resample := func() (*http.Response, error) {
+	// Resample a tool-less completion. For a short colon-ended action
+	// introduction, continue from that text rather than repeating the
+	// identical request that produced the premature completion.
+	resample := func(stalledText string) (*http.Response, error) {
 		if err := r.Context().Err(); err != nil {
 			return nil, err
 		}
-		return doUpstreamWithRetry(httpClient, upReq, upBody)
+		retryBody := upBody
+		if isToolCallStall(stalledText) {
+			var err error
+			log.Printf("opencode-cc: tool_call_stall continuation model=%s target=%s text=%.400q", incomingModel, targetModel, stalledText)
+			retryBody, err = toolContinuationBody(upBody, stalledText)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return doUpstreamWithRetry(httpClient, upReq, retryBody)
 	}
 	resampleEnabled := s.cfg.BridgeToollessResample
 	if upstreamStream && resp.StatusCode < http.StatusBadRequest &&
@@ -167,7 +187,7 @@ func (s *Server) relayAnthropicResponsesAggregated(
 	areq *proxy.AnthropicRequest,
 	reqBody []byte,
 	start time.Time,
-	resample func() (*http.Response, error),
+	resample func(string) (*http.Response, error),
 	resampleEnabled bool,
 ) {
 	defer resp.Body.Close()
@@ -226,7 +246,7 @@ func (s *Server) relayAnthropicResponsesAggregated(
 // (forced-stream upstream) vs plain JSON body reading.
 func (s *Server) maybeResampleToollessJSON(
 	r *http.Request,
-	resample func() (*http.Response, error),
+	resample func(string) (*http.Response, error),
 	enabled bool,
 	areq *proxy.AnthropicRequest,
 	aresp *proxy.AnthropicResponse,
@@ -249,7 +269,7 @@ func (s *Server) maybeResampleToollessJSON(
 	}
 	log.Printf("opencode-cc: toolless resample (%s) out=%d model=%s target=%s",
 		verdict, aresp.Usage.OutputTokens, incomingModel, targetModel)
-	r2, err := resample()
+	r2, err := resample(anthropicResponseText(aresp))
 	if err != nil {
 		log.Printf("opencode-cc: toolless resample failed: %v model=%s target=%s",
 			err, incomingModel, targetModel)
@@ -321,7 +341,7 @@ func (s *Server) relayAnthropicResponsesJSON(
 	areq *proxy.AnthropicRequest,
 	reqBody []byte,
 	start time.Time,
-	resample func() (*http.Response, error),
+	resample func(string) (*http.Response, error),
 	resampleEnabled bool,
 ) {
 	defer resp.Body.Close()
@@ -375,7 +395,7 @@ func (s *Server) maybeResampleToollessStream(
 	bw *bufio.Writer,
 	flusher http.Flusher,
 	conv *proxy.ResponsesToAnthropicStreamer,
-	resample func() (*http.Response, error),
+	resample func(string) (*http.Response, error),
 	enabled bool,
 	areq *proxy.AnthropicRequest,
 	incomingModel, targetModel string,
@@ -388,7 +408,7 @@ func (s *Server) maybeResampleToollessStream(
 	}
 	log.Printf("opencode-cc: toolless resample (%s) out=%d model=%s target=%s",
 		verdict, conv.OutputTokens(), incomingModel, targetModel)
-	r2, err := resample()
+	r2, err := resample(conv.TextHead())
 	if err != nil {
 		log.Printf("opencode-cc: toolless resample failed: %v model=%s target=%s",
 			err, incomingModel, targetModel)
@@ -537,7 +557,7 @@ func (s *Server) relayAnthropicResponsesStream(
 	areq *proxy.AnthropicRequest,
 	reqBody []byte,
 	start time.Time,
-	resample func() (*http.Response, error),
+	resample func(string) (*http.Response, error),
 	resampleEnabled bool,
 ) {
 	defer resp.Body.Close()
@@ -607,7 +627,15 @@ func (s *Server) relayAnthropicResponsesStream(
 	// A usable resample contributes tool blocks and its usage; its text is
 	// included only when the first sample had no text. Otherwise the first
 	// sample remains untouched. Finalize emits the sole terminal events.
-	s.maybeResampleToollessStream(r, bw, flusher, conv, resample, resampleEnabled, areq, incomingModel, targetModel)
+	originalStall := len(areq.Tools) > 0 && !conv.HasToolUse() && isToolCallStall(conv.TextHead())
+	continuationAttempts := 0
+	for attempt := 1; attempt <= 3; attempt++ {
+		continuationAttempts = attempt
+		rescued := s.maybeResampleToollessStream(r, bw, flusher, conv, resample, resampleEnabled, areq, incomingModel, targetModel)
+		if rescued || !resampleEnabled || !isToolCallStall(conv.TextHead()) || conv.HasToolUse() || conv.Incomplete() || conv.Failed() != "" || len(conv.DroppedCalls()) > 0 || conv.OutputTokens() > proxy.ToollessResampleMaxOutputTokens {
+			break
+		}
+	}
 	if err := conv.Finalize(); err != nil {
 		s.logFailed(r.Context(), r, incomingModel, targetModel, true,
 			http.StatusBadGateway, err.Error(), reqBody, time.Since(start))
@@ -663,9 +691,18 @@ func (s *Server) relayAnthropicResponsesStream(
 		log.Printf("opencode-cc: forced-tool turn returned tool-less out=%d in=%d text=%.400q model=%s target=%s",
 			conv.OutputTokens(), conv.InputTokens(), conv.TextHead(), incomingModel, targetModel)
 	}
+	responseLog := "[streamed]"
+	if originalStall {
+		responseLog = mustJSON(map[string]any{"diagnostic": "tool_call_stall", "recovered": conv.HasToolUse(), "attempts": continuationAttempts, "text": conv.TextHead(), "frames": conv.FrameCensus(), "wire_stop_reason": conv.StopReason()})
+	}
+	if stopReason == "end_turn" && len(areq.Tools) > 0 && isToolCallStall(conv.TextHead()) {
+		stopReason = "tool_call_stall"
+		responseLog = mustJSON(map[string]any{"failure": "upstream completed with promised tool action but no function call", "text": conv.TextHead(), "frames": conv.FrameCensus(), "wire_stop_reason": conv.StopReason()})
+		log.Printf("opencode-cc: unresolved tool_call_stall model=%s target=%s frames=%s", incomingModel, targetModel, conv.FrameCensus())
+	}
 	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, true, http.StatusOK,
 		conv.InputTokens(), conv.OutputTokens(), conv.CachedTokens(), 0,
-		stopReason, string(reqBody), "[streamed]", time.Since(start))
+		stopReason, string(reqBody), responseLog, time.Since(start))
 }
 
 func anthropicToolNames(tools []proxy.AnthropicTool) []string {
@@ -685,4 +722,39 @@ func isForcedToolChoice(areq *proxy.AnthropicRequest) bool {
 		return false
 	}
 	return areq.ToolChoice.Type == "any" || areq.ToolChoice.Type == "tool"
+}
+
+// Limit continuation to short, unfinished action introductions. A full answer
+// with tools available is not by itself evidence that a call was omitted.
+func isToolCallStall(text string) bool {
+	text = strings.TrimSpace(text)
+	return len(text) > 0 && len(text) < 400 && strings.HasSuffix(text, ":")
+}
+
+func anthropicResponseText(resp *proxy.AnthropicResponse) string {
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+	return text.String()
+}
+
+// Preserve the original request and cacheable prefix. This changes only the
+// retry's conversation tail; no synthetic tools or tool results are invented.
+func toolContinuationBody(body []byte, text string) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	var input []json.RawMessage
+	if err := json.Unmarshal(payload["input"], &input); err != nil {
+		return nil, err
+	}
+	assistant, _ := json.Marshal(map[string]any{"type": "message", "role": "assistant", "content": []map[string]string{{"type": "output_text", "text": text}}})
+	user, _ := json.Marshal(map[string]any{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "Continue with the tool action you just announced. Use the appropriate declared tool now rather than ending after another introduction. If the action cannot be performed, explain the blocker."}}})
+	input = append(input, assistant, user)
+	payload["input"], _ = json.Marshal(input)
+	return json.Marshal(payload)
 }

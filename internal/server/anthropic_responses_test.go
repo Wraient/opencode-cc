@@ -570,3 +570,79 @@ func TestBridgeThinkingMapsToModelMax(t *testing.T) {
 		t.Errorf("upstream efforts = %v, want [xhigh xhigh xhigh]", seen)
 	}
 }
+
+func TestBridgeColonStallContinuesWithConversationTail(t *testing.T) {
+	hits := 0
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		frames := textOnlyFrames()
+		if hits == 1 {
+			frames[0][1] = `{"type":"response.output_text.delta","item_id":"a","delta":"Now checking the time:"}`
+		} else {
+			var input []map[string]any
+			if err := json.Unmarshal(body["input"], &input); err != nil {
+				t.Error(err)
+			}
+			if len(input) < 3 || input[len(input)-2]["role"] != "assistant" || input[len(input)-1]["role"] != "user" {
+				t.Errorf("missing continuation tail: %s", body["input"])
+			}
+			if !strings.Contains(string(body["input"]), "Now checking the time:") {
+				t.Error("missing stalled assistant text")
+			}
+			// The first continuation also stalls; the next must still recover.
+			if hits >= 3 {
+				frames = toolFrames()
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, f := range frames {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", f[0], f[1])
+		}
+	}))
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	srv.cfg.BridgeToollessResample = true
+	rec := httptest.NewRecorder()
+	srv.Proxy().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, true))))
+	text, events, delta := bridgeStreamSummary(t, rec.Body.String())
+	if hits != 3 || text != "Now checking the time:" || events["message_stop"] != 1 || delta["delta"].(map[string]any)["stop_reason"] != "tool_use" {
+		t.Fatalf("hits=%d text=%q events=%v delta=%v", hits, text, events, delta)
+	}
+}
+
+func TestToolCallStallDetection(t *testing.T) {
+	for _, text := range []string{"Done.", "Hello", strings.Repeat("x", 400) + ":"} {
+		if isToolCallStall(text) {
+			t.Errorf("unexpected stall %q", text)
+		}
+	}
+	if !isToolCallStall("Now the commit:  ") {
+		t.Fatal("missed colon stall")
+	}
+}
+
+func TestBridgeColonStallRetryIsBounded(t *testing.T) {
+	hits := 0
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		frames := textOnlyFrames()
+		frames[0][1] = `{"type":"response.output_text.delta","item_id":"a","delta":"Now the commit:"}`
+		for _, f := range frames {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", f[0], f[1])
+		}
+	}))
+	defer zen.Close()
+	srv := responsesBridgeTestServer(t, zen.URL)
+	srv.cfg.BridgeToollessResample = true
+	rec := httptest.NewRecorder()
+	srv.Proxy().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bridgeAnthropicBody(t, true))))
+	text, events, delta := bridgeStreamSummary(t, rec.Body.String())
+	if hits != 4 || text != "Now the commit:" || events["message_stop"] != 1 || delta["delta"].(map[string]any)["stop_reason"] != "end_turn" {
+		t.Fatalf("hits=%d text=%q events=%v delta=%v", hits, text, events, delta)
+	}
+}

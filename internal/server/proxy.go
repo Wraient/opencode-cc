@@ -840,6 +840,31 @@ func estimateTokens(areq *proxy.AnthropicRequest) int {
 
 // ---- logging helpers ----
 
+// effortCtxKey carries the reasoning-effort level actually sent upstream for
+// a request whose final upstream body differs from the client body (the
+// recovery retries can clamp reasoning.effort after the relays captured the
+// client body). Set by the Responses paths after retries; read by the log
+// helpers as an override. Follows the APIKeyFromContext precedent.
+type effortCtxKey struct{}
+
+// withEffort returns ctx carrying the resolved upstream effort.
+func withEffort(ctx context.Context, effort string) context.Context {
+	if strings.TrimSpace(effort) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, effortCtxKey{}, effort)
+}
+
+func effortFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(effortCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 func (s *Server) logSuccess(ctx context.Context, r *http.Request, inModel, target string, stream bool, status, inputTok, outputTok int, stopReason, reqBody, respBody string, dur time.Duration) {
 	s.logSuccessWithCache(ctx, r, inModel, target, stream, status, inputTok, outputTok, 0, 0, stopReason, reqBody, respBody, dur)
 }
@@ -855,6 +880,13 @@ func (s *Server) logSuccessWithCache(ctx context.Context, r *http.Request, inMod
 		// Still record usage for quota even if request logging is off.
 		s.recordUsage(apiKey, inputTok+outputTok, 1)
 		return
+	}
+	// Resolve before truncation: bodies over MaxBodyLogBytes are cut for
+	// storage, but effort lives in the first bytes either way — resolve
+	// from the full body so the row is always accurate.
+	effort := s.effortForRequest(r.URL.Path, target, []byte(reqBody))
+	if ctxEffort := effortFromContext(ctx); ctxEffort != "" {
+		effort = ctxEffort
 	}
 	if s.cfg.Snapshot().MaxBodyLogBytes > 0 {
 		reqBody = truncate(reqBody, s.cfg.Snapshot().MaxBodyLogBytes)
@@ -884,6 +916,8 @@ func (s *Server) logSuccessWithCache(ctx context.Context, r *http.Request, inMod
 				CachedInputTokens:        cachedInputTok,
 				CacheCreationInputTokens: cacheCreationInputTok,
 				StopReason:               stopReason,
+				Error:                    toolStallError(stopReason),
+				Effort:                   effort,
 				ReqBody:                  reqBody,
 				RespBody:                 respBody,
 				APIKeyID:                 keyID,
@@ -913,6 +947,10 @@ func (s *Server) logFailed(ctx context.Context, r *http.Request, inModel, target
 	}
 	mb := s.cfg.Snapshot().MaxBodyLogBytes
 	reqStr := string(reqBody)
+	effort := s.effortForRequest(r.URL.Path, target, reqBody)
+	if ctxEffort := effortFromContext(ctx); ctxEffort != "" {
+		effort = ctxEffort
+	}
 	if mb > 0 {
 		reqStr = truncate(reqStr, mb)
 	}
@@ -935,6 +973,7 @@ func (s *Server) logFailed(ctx context.Context, r *http.Request, inModel, target
 				DurationMs:    dur.Milliseconds(),
 				StopReason:    "error",
 				Error:         truncate(errMsg, 2048),
+				Effort:        effort,
 				ReqBody:       reqStr,
 				APIKeyID:      keyID,
 			})
@@ -1050,3 +1089,10 @@ const (
 	maxRequestBytes  = 32 << 20 // 32 MiB
 	maxResponseBytes = 32 << 20
 )
+
+func toolStallError(stop string) string {
+	if stop == "tool_call_stall" {
+		return "upstream ended after a tool-action introduction without emitting a function call"
+	}
+	return ""
+}

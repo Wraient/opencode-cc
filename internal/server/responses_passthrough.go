@@ -59,6 +59,12 @@ func (s *Server) proxyResponsesPassthrough(
 	// known scale (unknown -> model maximum); requests without an effort
 	// pass through untouched.
 	upBody = s.clampPassthroughEffort(upBody, targetModel, incomingModel)
+	// Stamp the effort actually sent upstream so the logged row matches it
+	// exactly (the relays only see the client body). Updated again below if
+	// an effort-clamp retry rewrites it.
+	if eff, ok := proxy.ExtractRequestEffort(upBody); ok {
+		r = r.WithContext(withEffort(r.Context(), eff))
+	}
 
 	upURL := strings.TrimRight(upstream, "/") + "/v1/responses"
 
@@ -102,9 +108,14 @@ func (s *Server) proxyResponsesPassthrough(
 		incomingModel, targetModel, in.Stream, start); ok {
 		resp, upBody = newResp, newBody
 	}
-	if newResp, _, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
+	if newResp, newBody, ok := s.maybeRetryInvalidEffort(httpClient, upReq, upBody, resp,
 		incomingModel, targetModel, in.Stream, start); ok {
-		resp = newResp
+		resp, upBody = newResp, newBody
+		// Same accuracy stamp as the bridge path: the retry may have
+		// clamped reasoning.effort after the client body was captured.
+		if eff, ok := proxy.ExtractRequestEffort(newBody); ok {
+			r = r.WithContext(withEffort(r.Context(), eff))
+		}
 	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))

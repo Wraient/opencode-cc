@@ -60,6 +60,7 @@ func (s *Store) migrate() error {
 	// table across versions without a full migration framework.
 	for _, stmt := range []string{
 		`ALTER TABLE requests ADD COLUMN api_key_id INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE requests ADD COLUMN effort TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE requests ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE requests ADD COLUMN cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE stats_hourly ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0`,
@@ -107,7 +108,8 @@ CREATE TABLE IF NOT EXISTS requests (
     error           TEXT    NOT NULL DEFAULT '',
     req_body        TEXT    NOT NULL DEFAULT '',
     resp_body       TEXT    NOT NULL DEFAULT '',
-    api_key_id      INTEGER NOT NULL DEFAULT 0
+    api_key_id      INTEGER NOT NULL DEFAULT 0,
+    effort          TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts DESC);
 
@@ -159,9 +161,14 @@ type RequestRow struct {
 	CacheCreationInputTokens int       `json:"cache_creation_input_tokens"`
 	StopReason               string    `json:"stop_reason"`
 	Error                    string    `json:"error"`
-	ReqBody                  string    `json:"req_body"`
-	RespBody                 string    `json:"resp_body"`
-	APIKeyID                 int64     `json:"api_key_id"`
+	// Effort is the reasoning-effort level actually sent upstream for this
+	// request (reasoning.effort on Responses paths, "" when the request
+	// carries none — e.g. native Anthropic passthrough). Surfaced in the
+	// Request Logs table so each row proves its own level.
+	Effort   string `json:"effort"`
+	ReqBody  string `json:"req_body"`
+	RespBody string `json:"resp_body"`
+	APIKeyID int64  `json:"api_key_id"`
 }
 
 // InsertRequest writes one request row and bumps the hourly stats atomically.
@@ -176,12 +183,12 @@ func (s *Store) InsertRequest(ctx context.Context, r *RequestRow) error {
 INSERT INTO requests
 (ts, method, path, incoming_model, target_model, stream, status, duration_ms,
  input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens,
- stop_reason, error, req_body, resp_body, api_key_id)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+ stop_reason, error, effort, req_body, resp_body, api_key_id)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.Ts.UnixMilli(), r.Method, r.Path, r.IncomingModel, r.TargetModel,
 		boolToInt(r.Stream), r.Status, r.DurationMs, r.InputTokens, r.OutputTokens,
 		r.CachedInputTokens, r.CacheCreationInputTokens,
-		r.StopReason, r.Error, r.ReqBody, r.RespBody, r.APIKeyID,
+		r.StopReason, r.Error, r.Effort, r.ReqBody, r.RespBody, r.APIKeyID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert request: %w", err)
@@ -217,7 +224,7 @@ func (s *Store) ListRequests(ctx context.Context, limit int) ([]RequestRow, erro
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, ts, method, path, incoming_model, target_model, stream, status,
        duration_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens,
-       stop_reason, error, req_body, resp_body, api_key_id
+       stop_reason, error, effort, req_body, resp_body, api_key_id
 FROM requests ORDER BY ts DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -231,7 +238,7 @@ func (s *Store) GetRequest(ctx context.Context, id int64) (*RequestRow, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, ts, method, path, incoming_model, target_model, stream, status,
        duration_ms, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens,
-       stop_reason, error, req_body, resp_body, api_key_id
+       stop_reason, error, effort, req_body, resp_body, api_key_id
 FROM requests WHERE id = ?`, id)
 	r := &RequestRow{}
 	var ts int64
@@ -239,7 +246,7 @@ FROM requests WHERE id = ?`, id)
 	if err := row.Scan(&r.ID, &ts, &r.Method, &r.Path, &r.IncomingModel, &r.TargetModel,
 		&stream, &r.Status, &r.DurationMs, &r.InputTokens, &r.OutputTokens,
 		&r.CachedInputTokens, &r.CacheCreationInputTokens,
-		&r.StopReason, &r.Error, &r.ReqBody, &r.RespBody, &r.APIKeyID); err != nil {
+		&r.StopReason, &r.Error, &r.Effort, &r.ReqBody, &r.RespBody, &r.APIKeyID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -259,7 +266,7 @@ func scanRows(rows *sql.Rows) ([]RequestRow, error) {
 		if err := rows.Scan(&r.ID, &ts, &r.Method, &r.Path, &r.IncomingModel, &r.TargetModel,
 			&stream, &r.Status, &r.DurationMs, &r.InputTokens, &r.OutputTokens,
 			&r.CachedInputTokens, &r.CacheCreationInputTokens,
-			&r.StopReason, &r.Error, &r.ReqBody, &r.RespBody, &r.APIKeyID); err != nil {
+			&r.StopReason, &r.Error, &r.Effort, &r.ReqBody, &r.RespBody, &r.APIKeyID); err != nil {
 			return nil, err
 		}
 		r.Ts = time.UnixMilli(ts)
