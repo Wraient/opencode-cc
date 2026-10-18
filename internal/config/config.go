@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"hash/fnv"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -282,7 +283,7 @@ func (c *Config) NextUpstream() (base, key string, ok bool) {
 	n := uint64(len(pool))
 	idx := atomic.AddUint64(&c.rr, 1) % n
 	u := pool[idx]
-	return strings.TrimRight(u.BaseURL, "/"), u.APIKey, true
+	return selectedUpstream(u.BaseURL, u.APIKey)
 }
 
 // NextUpstreamForKey returns a stable backend for stickyKey. It is used for
@@ -298,7 +299,7 @@ func (c *Config) NextUpstreamForKey(stickyKey string) (base, key string, ok bool
 		return legacyUpstream(legacyBase, legacyKey)
 	}
 	u := pool[stickyUpstreamIndex(stickyKey, len(pool))]
-	return strings.TrimRight(u.BaseURL, "/"), u.APIKey, true
+	return selectedUpstream(u.BaseURL, u.APIKey)
 }
 
 func (c *Config) usableUpstreams() ([]Upstream, string, string) {
@@ -317,9 +318,18 @@ func (c *Config) usableUpstreams() ([]Upstream, string, string) {
 
 func legacyUpstream(base, key string) (string, string, bool) {
 	if base != "" && key != "" {
-		return strings.TrimRight(base, "/"), key, true
+		return selectedUpstream(base, key)
 	}
 	return "", "", false
+}
+
+func selectedUpstream(base, configuredKey string) (string, string, bool) {
+	key, err := ResolveUpstreamCredential(base, configuredKey)
+	if err != nil {
+		log.Printf("opencode-cc: upstream credential unavailable: %v", err)
+		return "", "", false
+	}
+	return strings.TrimRight(base, "/"), key, true
 }
 
 func stickyUpstreamIndex(stickyKey string, poolSize int) int {

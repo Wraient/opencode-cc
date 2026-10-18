@@ -1,0 +1,219 @@
+{
+  "date": "2026-10-18",
+  "warp_version": "2026.8.2110.0",
+  "warp_mode": "local proxy, MASQUE default automatic fallback",
+  "credential_reference": "opencode://active",
+  "staging": {
+    "base": "http://127.0.0.1:18789",
+    "tests": [
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 798,
+          "completion_tokens": 12,
+          "total_tokens": 810,
+          "prompt_tokens_details": {
+            "cached_tokens": 768
+          }
+        },
+        "elapsed_s": 6.028
+      },
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "space-bunny-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 884,
+          "completion_tokens": 3,
+          "total_tokens": 887,
+          "prompt_tokens_details": {
+            "cached_tokens": 768
+          }
+        },
+        "elapsed_s": 0.853
+      },
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "cat-jam-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 481,
+          "completion_tokens": 21,
+          "total_tokens": 502,
+          "prompt_tokens_details": {
+            "cached_tokens": 448
+          }
+        },
+        "elapsed_s": 0.629
+      },
+      {
+        "case": "messages",
+        "route": "/v1/messages",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "input_tokens": 34,
+          "output_tokens": 18
+        },
+        "elapsed_s": 1.609
+      },
+      {
+        "case": "chat_stream",
+        "route": "/v1/chat/completions",
+        "model": "cat-jam-free",
+        "status": 200,
+        "text": "OK",
+        "completed": true,
+        "visible_ttft_s": 0.5426622019986098,
+        "elapsed_s": 0.552
+      },
+      {
+        "case": "responses_stream",
+        "route": "/v1/responses",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "completed": true,
+        "visible_ttft_s": 1.3154322379996302,
+        "elapsed_s": 1.316
+      },
+      {
+        "case": "forced_client_tool",
+        "route": "/v1/chat/completions",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "tool_call_verified": true,
+        "usage": {
+          "prompt_tokens": 301,
+          "completion_tokens": 38,
+          "total_tokens": 339,
+          "prompt_tokens_details": {}
+        },
+        "elapsed_s": 1.469
+      }
+    ],
+    "result": "PASS"
+  },
+  "live": {
+    "base": "http://127.0.0.1:8787",
+    "tests": [
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 798,
+          "completion_tokens": 17,
+          "total_tokens": 815,
+          "prompt_tokens_details": {
+            "cached_tokens": 768
+          }
+        },
+        "elapsed_s": 2.059
+      },
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "space-bunny-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 884,
+          "completion_tokens": 3,
+          "total_tokens": 887,
+          "prompt_tokens_details": {
+            "cached_tokens": 768
+          }
+        },
+        "elapsed_s": 0.924
+      },
+      {
+        "case": "chat",
+        "route": "/v1/chat/completions",
+        "model": "cat-jam-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "prompt_tokens": 481,
+          "completion_tokens": 21,
+          "total_tokens": 502
+        },
+        "elapsed_s": 0.618
+      },
+      {
+        "case": "messages",
+        "route": "/v1/messages",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "usage": {
+          "input_tokens": 34,
+          "output_tokens": 38
+        },
+        "elapsed_s": 1.697
+      },
+      {
+        "case": "chat_stream",
+        "route": "/v1/chat/completions",
+        "model": "cat-jam-free",
+        "status": 200,
+        "text": "OK",
+        "completed": true,
+        "visible_ttft_s": 0.587783445000241,
+        "elapsed_s": 0.588
+      },
+      {
+        "case": "responses_stream",
+        "route": "/v1/responses",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "text": "OK",
+        "completed": true,
+        "visible_ttft_s": 9.251528025997686,
+        "elapsed_s": 9.252
+      },
+      {
+        "case": "forced_client_tool",
+        "route": "/v1/chat/completions",
+        "model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "tool_call_verified": true,
+        "usage": {
+          "prompt_tokens": 301,
+          "completion_tokens": 55,
+          "total_tokens": 356,
+          "prompt_tokens_details": {
+            "cached_tokens": 256
+          }
+        },
+        "elapsed_s": 1.433
+      }
+    ],
+    "result": "PASS"
+  },
+  "deployment": {
+    "result": "PASS",
+    "staging": "PASS",
+    "binary_sha256": "bc2b4fce516c4bfec3df8ff566550469bbea42ab509e42d1af426a9830fd36fd",
+    "credential_source": "opencode://active",
+    "warp_proxy": "127.0.0.1:40000",
+    "install_method": "stop, atomic replacement, start",
+    "rollback": false
+  },
+  "limits": [
+    "Smoke prompts do not measure sustained decode throughput or rate-limit ceilings.",
+    "OAuth refresh remains owned by the official CLI.",
+    "The exact hosted free-tier gateway check is not established."
+  ]
+}

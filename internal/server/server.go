@@ -47,6 +47,9 @@ func New(cfg *config.Config, st *store.Store) *Server {
 		httpClient: &http.Client{
 			Timeout: 0, // streaming: no global timeout (per-request override used)
 			Transport: &http.Transport{
+				// Honor explicit HTTP(S)_PROXY and NO_PROXY settings, including
+				// an opt-in local WARP proxy. Loopback remains direct.
+				Proxy:        http.ProxyFromEnvironment,
 				MaxIdleConns: 256,
 				// Concurrency headroom so agent bursts (parallel subagents +
 				// retries) reuse pooled sockets instead of opening new ones.

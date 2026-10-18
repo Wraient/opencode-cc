@@ -13,16 +13,20 @@
 
 1. `go build ./... && go test ./...` in the repo.
 2. Build a staging binary: `go build -o /tmp/opencode-cc-stage .`
-3. Run staging on a **spare port with an isolated data dir**, key from env:
+3. Check listeners first. **:18787 is now used by Morph**; do not stop or
+   reuse it for staging. Use **:18789 only when free**, with an isolated data
+   dir and key from env:
    ```
    export $(grep -E '^(ZEN_API_KEY|OPENCODE_CC_)' ~/.config/opencode-cc/env | xargs)
-   OPENCODE_CC_LISTEN='127.0.0.1:18787' nohup /tmp/opencode-cc-stage -data /tmp/cc-stage-data >/tmp/cc-stage.log 2>&1 &
+   OPENCODE_CC_LISTEN='127.0.0.1:18789' nohup /tmp/opencode-cc-stage -data /tmp/cc-stage-data >/tmp/cc-stage.log 2>&1 &
    ```
-4. E2E-test through staging on **:18787** (chat + the feature under test).
-5. Only when staging is green: `systemctl --user stop opencode-cc`,
-   copy the staging binary over `~/.local/bin/opencode-cc`
-   (cp fails with "Text file busy" while the service runs — stop first),
-   then `systemctl --user start opencode-cc`.
+4. E2E-test through staging on **:18789** (chat + the feature under test).
+5. Only when staging is green: stop `opencode-cc.service`, install staging
+   to `~/.local/bin/opencode-cc.new` (mode 0755), atomically rename it over
+   `~/.local/bin/opencode-cc`, then start the production unit. **Morph also
+   executes this same binary**: a plain overwrite fails with "Text file busy"
+   even after stopping production. Atomic replacement preserves the inode used
+   by those running adapters; do not stop Morph to deploy this service.
 6. Smoke-test live: `curl :8787/api/health` + one real `/v1/messages` call.
 7. Kill staging (`pkill` with a bracket pattern like `[o]pencode-cc-stage`
    so pkill doesn't match its own command line) and remove `/tmp/cc-stage-data`
@@ -64,3 +68,16 @@
   staging tests on 2026-10-15; timestamped config/binary backups are retained.
 - Uncommitted work may exist on `patch/opencode-user-agent`; check
   `git status` before building so you know what you're deploying.
+
+## Active CLI authentication and WARP
+
+- The legacy `~/.local/share/opencode/auth.json` is not proof of the credential
+  currently used by OpenCode v2. Inspect the active `opencode` row in its
+  credential database read-only; compare identities without printing tokens.
+- `opencode://active` in a saved upstream's `api_key` opts into reading that
+  current credential for each request. OpenCode owns OAuth refresh; never copy
+  or reuse its rotating refresh token or modify its credential database.
+- WARP runs as a local SOCKS proxy on `127.0.0.1:40000`. The relay uses explicit
+  `HTTP_PROXY`/`HTTPS_PROXY` settings; other apps remain direct. WARP proxy mode
+  in this installed release requires MASQUE. Use `warp-cli status` and a
+  proxied Cloudflare trace to verify the tunnel before inference tests.

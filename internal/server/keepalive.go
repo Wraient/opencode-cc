@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Kiowx/opencode-cc/internal/config"
 )
 
 // keepAliveInterval is how often each configured upstream is pinged to hold
@@ -72,7 +74,11 @@ func (s *Server) pingUpstreams() {
 		if !u.Enabled || strings.TrimSpace(u.BaseURL) == "" {
 			continue
 		}
-		base, key := u.BaseURL, u.APIKey
+		base := u.BaseURL
+		key, err := config.ResolveUpstreamCredential(base, u.APIKey)
+		if err != nil {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

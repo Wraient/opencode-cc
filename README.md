@@ -667,6 +667,41 @@ inserting synthetic user messages. It includes unit tests and an isolated
 real-CLI recovery harness verified with OpenCode v2.0.24 and v2.0.29. Provider
 quotas and cache expiry still apply; the plugin controls recovery behavior.
 
+## Use the active OpenCode Console credential
+
+For an OpenCode inference upstream, set its `api_key` to `opencode://active` in
+the upstream pool. This opt-in reference reads the active `opencode` credential
+from the official v2 CLI's SQLite database for each request. It follows token
+rotation without saving access tokens in the relay configuration or using the
+CLI's refresh token. Only HTTPS `opencode.ai` destinations accept this reference.
+
+The default database is `$XDG_DATA_HOME/opencode/opencode.db`, or
+`~/.local/share/opencode/opencode.db`. Set `OPENCODE_CC_OPENCODE_DB` to override
+its path. The service user must be able to read it. Missing, ambiguous, malformed,
+or expired credentials stop locally; the relay never falls back to an old key.
+OpenCode remains responsible for OAuth renewal and reconnection. This reference
+does not guarantee that the provider will keep accepting a model or network path.
+
+## Optional upstream network proxy
+
+The upstream HTTP transport honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
+Set them in the environment of the proxy service before starting it; setting them
+only in a client shell does not change an already running service. Loopback
+requests stay direct.
+
+For an already connected Cloudflare WARP local proxy:
+
+```sh
+HTTPS_PROXY=socks5h://127.0.0.1:40000
+HTTP_PROXY=socks5h://127.0.0.1:40000
+NO_PROXY=127.0.0.1,localhost,::1
+```
+
+This changes the network path only. Upstream authentication, model availability,
+and access restrictions still apply. Verify inference on isolated staging before
+changing a live service. See the [October 18 diagnosis](docs/diagnostics/2026-10-18-free-tier-rejection.md)
+for the WARP test and the expired relay credential it exposed.
+
 ## License
 
 MIT

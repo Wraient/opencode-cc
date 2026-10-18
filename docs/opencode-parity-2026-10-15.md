@@ -1,5 +1,10 @@
 # OpenCode v2 parity audit — 2026-10-15
 
+> **Historical result — regression repaired 2026-10-18.** These benchmark
+> numbers describe October 15 only. A later network-path-dependent 403 and an
+> expired relay key were repaired with WARP and a read-only reference to the
+> CLI's active OAuth credential. See [the recovery and live validation](diagnostics/2026-10-18-free-tier-rejection.md).
+
 Current 403 failures were reproduced, fixed, tested on isolated staging, and deployed. This is an API translator with an audited upstream contract; it is not the entire OpenCode agent, and future gateway compatibility cannot be guaranteed.
 
 ## Released source and provenance
