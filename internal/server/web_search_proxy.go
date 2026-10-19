@@ -315,9 +315,24 @@ func (s *Server) doOpenAIChat(
 	stream bool,
 	timeoutSeconds int,
 ) (*proxy.OpenAIResponse, error) {
+	// The free lane is identity-gated: its requests must look like the OpenCode
+	// client (stream:true plus the marker tools), no matter which internal
+	// helper emits them. Shim-generated calls are non-streaming by design, so
+	// on free models they go through the same PrepareFreeChatBody prep as the
+	// main handlers and the streamed response is aggregated back into a single
+	// completion; without it the upstream gate answers 403 "free tier can only
+	// be used from within OpenCode".
+	free := proxy.IsFreeModel(req.Model)
 	upBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("could not encode upstream request: %w", err)
+	}
+	if free {
+		upBody, err = proxy.PrepareFreeChatBody(upBody)
+		if err != nil {
+			return nil, fmt.Errorf("could not prepare free-tier request: %w", err)
+		}
+		stream = true
 	}
 	upURL := strings.TrimRight(upstream, "/") + "/v1/chat/completions"
 	upReq, err := http.NewRequestWithContext(down.Context(), http.MethodPost, upURL, bytes.NewReader(upBody))
@@ -326,7 +341,11 @@ func (s *Server) doOpenAIChat(
 	}
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Authorization", "Bearer "+zenKey)
-	upReq.Header.Set("Accept", "application/json")
+	if stream {
+		upReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		upReq.Header.Set("Accept", "application/json")
+	}
 	upReq.Header.Set("User-Agent", ocUA())
 	setZenSessionHeaders(upReq, down.Header, req.PromptCacheKey)
 
@@ -348,7 +367,12 @@ func (s *Server) doOpenAIChat(
 		}
 		return nil, fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	out, err := proxy.ParseOpenAIResponse(raw)
+	var out *proxy.OpenAIResponse
+	if stream {
+		out, err = proxy.AggregateOpenAIStream(bytes.NewReader(raw))
+	} else {
+		out, err = proxy.ParseOpenAIResponse(raw)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("could not parse upstream response: %w", err)
 	}

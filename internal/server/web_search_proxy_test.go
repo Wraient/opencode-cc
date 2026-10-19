@@ -131,6 +131,90 @@ func TestWebSearchShimNonStreamReturnsServerToolBlocks(t *testing.T) {
 	}
 }
 
+// Shim-generated model calls for free models must carry the free-tier identity
+// prep (stream:true plus marker tools); otherwise the upstream gate rejects
+// them with 403 "free tier can only be used from within OpenCode" and the
+// client sees a 502.
+func TestWebSearchShimFreeModelUsesFreeTierPrep(t *testing.T) {
+	restoreWebSearchProvider(t)
+
+	type upstreamCall struct {
+		stream bool
+		tools  []string
+		accept string
+	}
+	var calls []upstreamCall
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Stream bool `json:"stream"`
+			Tools  []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		names := make([]string, 0, len(body.Tools))
+		for _, tool := range body.Tools {
+			names = append(names, tool.Function.Name)
+		}
+		calls = append(calls, upstreamCall{stream: body.Stream, tools: names, accept: r.Header.Get("Accept")})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-free\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OpenAI's official website is https://openai.com.\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-free\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":1,\"total_tokens\":8}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Upstreams = []config.Upstream{{BaseURL: upstream.URL, APIKey: "oc_sk_test", Enabled: true}}
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: "deepseek-v4.1-flash-free"}}
+	cfg.NativeAnthropic = false
+	srv, _ := newTestServerWithCfg(t, cfg)
+
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"max_tokens":256,
+		"stream":false,
+		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":1}],
+		"tool_choice":{"type":"tool","name":"web_search"},
+		"messages":[{"role":"user","content":"Search for OpenAI's official website."}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	srv.Proxy()(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(calls) == 0 {
+		t.Fatal("no upstream calls")
+	}
+	for i, call := range calls {
+		if !call.stream {
+			t.Errorf("call %d: stream = false, want true on the free lane", i)
+		}
+		if call.accept != "text/event-stream" {
+			t.Errorf("call %d: Accept = %q, want text/event-stream", i, call.accept)
+		}
+		hasShell, hasRead := false, false
+		for _, name := range call.tools {
+			switch name {
+			case "shell":
+				hasShell = true
+			case "read":
+				hasRead = true
+			}
+		}
+		if !hasShell || !hasRead {
+			t.Errorf("call %d: free-tier marker tools missing: %v", i, call.tools)
+		}
+	}
+	if !strings.Contains(rr.Body.String(), "web_search_tool_result") {
+		t.Fatalf("answer response missing search blocks: %s", rr.Body.String())
+	}
+}
+
 func TestWebSearchShimStreamReturnsServerToolEvents(t *testing.T) {
 	restoreWebSearchProvider(t)
 
