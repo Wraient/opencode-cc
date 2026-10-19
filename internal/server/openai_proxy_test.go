@@ -158,6 +158,83 @@ func TestPrepareOpenAIRequestSortsTools(t *testing.T) {
 	}
 }
 
+func TestPrepareOpenAIRequestInjectsDeepSeekReasoningReplay(t *testing.T) {
+	srv, _, _ := newOpenAITestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	upBody, _, target, _, err := srv.prepareOpenAIRequest([]byte(`{
+		"model":"deepseek-v4.1-flash-free",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"run","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"c1","content":"ok"},
+			{"role":"assistant","content":"all done"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("prepare request: %v", err)
+	}
+	if target != "deepseek-v4.1-flash-free" {
+		t.Fatalf("target = %q", target)
+	}
+	var out struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(upBody, &out); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	assistants := 0
+	for _, msg := range out.Messages {
+		var role string
+		_ = json.Unmarshal(msg["role"], &role)
+		if role != "assistant" {
+			continue
+		}
+		assistants++
+		raw, ok := msg["reasoning_content"]
+		if !ok {
+			t.Fatalf("assistant message is missing reasoning_content: %s", upBody)
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value != "" {
+			t.Fatalf("reasoning_content = %q (%v), want explicit empty", value, err)
+		}
+	}
+	if assistants != 2 {
+		t.Fatalf("assistant messages = %d, want 2", assistants)
+	}
+}
+
+func TestPrepareOpenAIRequestLeavesNonDeepSeekReasoningAlone(t *testing.T) {
+	srv, _, _ := newOpenAITestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	upBody, _, target, _, err := srv.prepareOpenAIRequest([]byte(`{
+		"model":"client-model",
+		"messages":[
+			{"role":"user","content":"hi"},
+			{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"run","arguments":"{}"}}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("prepare request: %v", err)
+	}
+	if target != "glm-5.1" {
+		t.Fatalf("target = %q", target)
+	}
+	var out struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(upBody, &out); err != nil {
+		t.Fatalf("decode upstream request: %v", err)
+	}
+	for _, msg := range out.Messages {
+		var role string
+		_ = json.Unmarshal(msg["role"], &role)
+		if role == "assistant" {
+			if _, ok := msg["reasoning_content"]; ok {
+				t.Fatalf("non-deepseek assistant gained reasoning_content: %s", upBody)
+			}
+		}
+	}
+}
+
 func TestOpenAIChatCompletionsStream(t *testing.T) {
 	var expected strings.Builder
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

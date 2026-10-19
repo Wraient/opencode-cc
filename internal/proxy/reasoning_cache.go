@@ -26,10 +26,23 @@ var defaultReasoningContentCache = &reasoningContentCache{
 }
 
 func cacheReasoningForToolCalls(reasoning string, toolIDs ...string) {
-	defaultReasoningContentCache.store(reasoning, toolIDs...)
+	defaultReasoningContentCache.store(reasoning, strings.TrimSpace(reasoning) != "", toolIDs...)
 }
 
 func cachedReasoningForToolCalls(toolIDs []string) string {
+	reasoning, _ := defaultReasoningContentCache.lookup(toolIDs)
+	return reasoning
+}
+
+// cacheReasoningStateForToolCalls records reasoning replay state keyed by tool
+// call id. present is true when the provider sent a reasoning_content field —
+// even an empty one — so an explicit empty replay is stored and not confused
+// with "no reasoning was produced".
+func cacheReasoningStateForToolCalls(reasoning string, present bool, toolIDs ...string) {
+	defaultReasoningContentCache.store(reasoning, present, toolIDs...)
+}
+
+func cachedReasoningStateForToolCalls(toolIDs []string) (string, bool) {
 	return defaultReasoningContentCache.lookup(toolIDs)
 }
 
@@ -39,9 +52,9 @@ func resetReasoningContentCacheForTest() {
 	defaultReasoningContentCache.entries = make(map[string]reasoningCacheEntry)
 }
 
-func (c *reasoningContentCache) store(reasoning string, toolIDs ...string) {
+func (c *reasoningContentCache) store(reasoning string, present bool, toolIDs ...string) {
 	reasoning = strings.TrimSpace(reasoning)
-	if reasoning == "" || len(toolIDs) == 0 {
+	if !present || len(toolIDs) == 0 {
 		return
 	}
 	now := time.Now()
@@ -60,9 +73,9 @@ func (c *reasoningContentCache) store(reasoning string, toolIDs ...string) {
 	}
 }
 
-func (c *reasoningContentCache) lookup(toolIDs []string) string {
+func (c *reasoningContentCache) lookup(toolIDs []string) (string, bool) {
 	if len(toolIDs) == 0 {
-		return ""
+		return "", false
 	}
 	now := time.Now()
 	c.mu.Lock()
@@ -74,10 +87,10 @@ func (c *reasoningContentCache) lookup(toolIDs []string) string {
 			continue
 		}
 		if entry, ok := c.entries[id]; ok {
-			return entry.reasoning
+			return entry.reasoning, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 func (c *reasoningContentCache) pruneLocked(now time.Time) {

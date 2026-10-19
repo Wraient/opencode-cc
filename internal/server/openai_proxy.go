@@ -138,6 +138,11 @@ func (s *Server) prepareOpenAIRequest(body []byte) ([]byte, string, string, bool
 
 	targetModel := s.cfg.ResolveModel(incomingModel)
 	payload["model"], _ = json.Marshal(targetModel)
+	if proxy.RequiresReasoningReplay(targetModel) {
+		if err := proxy.EnsureRawReasoningReplay(payload); err != nil {
+			return nil, incomingModel, targetModel, false, fmt.Errorf("could not prepare reasoning replay: %w", err)
+		}
+	}
 	proxy.ApplyRawOpenAIPromptCache(payload, promptCacheOptionsFromConfig(s.cfg.Snapshot()))
 	upBody, err := json.Marshal(payload)
 	if err != nil {

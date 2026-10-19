@@ -52,7 +52,8 @@ func ConvertResponse(in *OpenAIResponse, requestModel string) *AnthropicResponse
 				continue
 			}
 			out.Content = append(out.Content, block)
-			cacheReasoningForToolCalls(choice.Message.ReasoningContent, block.ID)
+			cacheReasoningStateForToolCalls(choice.Message.ReasoningContent,
+				choice.Message.ReasoningContentSet || choice.Message.ReasoningContent != "", block.ID)
 			hasToolUse = true
 		}
 		if choice.Message.FunctionCall != nil {
@@ -62,7 +63,8 @@ func ConvertResponse(in *OpenAIResponse, requestModel string) *AnthropicResponse
 			})
 			if ok || !truncatedFinish(choice.FinishReason) {
 				out.Content = append(out.Content, block)
-				cacheReasoningForToolCalls(choice.Message.ReasoningContent, block.ID)
+				cacheReasoningStateForToolCalls(choice.Message.ReasoningContent,
+					choice.Message.ReasoningContentSet || choice.Message.ReasoningContent != "", block.ID)
 				hasToolUse = true
 			}
 		}
