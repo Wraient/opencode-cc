@@ -86,10 +86,10 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 		if err != nil {
 			lastErr = err
 			lastStatus = 0
-			if !isTimeoutErr(err) || attempt >= 2 {
+			if (!isTimeoutErr(err) && !isProxyConnectivityFailure(err)) || attempt >= 2 {
 				return nil, err
 			}
-			log.Printf("opencode-cc: upstream attempt %d timeout (%s), retrying [%s]",
+			log.Printf("opencode-cc: upstream attempt %d transport failure (%s), retrying [%s]",
 				attempt+1, truncateErr(err.Error()), summarizeUpstreamBody(body))
 			continue
 		}

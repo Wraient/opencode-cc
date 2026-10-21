@@ -121,9 +121,10 @@ func (s *Server) proxyAnthropicViaResponses(
 	resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 	if err != nil {
 		logUpstreamError(r, incomingModel, targetModel, areq.Stream, time.Since(start), err)
-		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
+		status := upstreamFailureStatus(w, err)
+		writeAnthropicError(w, status, "api_error", "upstream request failed: "+err.Error())
 		s.logFailed(r.Context(), r, incomingModel, targetModel, areq.Stream,
-			http.StatusBadGateway, err.Error(), body, time.Since(start))
+			status, err.Error(), body, time.Since(start))
 		return
 	}
 	if newResp, newBody, ok := s.maybeRetryStaleReasoning(httpClient, upReq, upBody, resp,

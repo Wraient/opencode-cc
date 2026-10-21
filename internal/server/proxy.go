@@ -144,8 +144,9 @@ func (s *Server) Proxy() http.HandlerFunc {
 		// the upstream POST has no side effects.
 		resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 		if err != nil {
-			writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
-			s.logFailed(ctx, r, areq.Model, targetModel, areq.Stream, http.StatusBadGateway, err.Error(), body, time.Since(start))
+			status := upstreamFailureStatus(w, err)
+			writeAnthropicError(w, status, "api_error", "upstream request failed: "+err.Error())
+			s.logFailed(ctx, r, areq.Model, targetModel, areq.Stream, status, err.Error(), body, time.Since(start))
 			return
 		}
 
@@ -222,8 +223,9 @@ func (s *Server) proxyNativeAnthropic(
 	// bound, and this path had no recovery at all.
 	resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 	if err != nil {
-		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
-		s.logFailed(r.Context(), r, areq.Model, targetModel, areq.Stream, http.StatusBadGateway, err.Error(), body, time.Since(start))
+		status := upstreamFailureStatus(w, err)
+		writeAnthropicError(w, status, "api_error", "upstream request failed: "+err.Error())
+		s.logFailed(r.Context(), r, areq.Model, targetModel, areq.Stream, status, err.Error(), body, time.Since(start))
 		return
 	}
 

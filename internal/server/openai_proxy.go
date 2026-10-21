@@ -84,9 +84,10 @@ func (s *Server) OpenAIProxy() http.HandlerFunc {
 		// downstream yet and the POST has no side effects.
 		resp, err := doUpstreamWithRetry(httpClient, upReq, upBody)
 		if err != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "api_error", "upstream request failed: "+err.Error())
+			status := upstreamFailureStatus(w, err)
+			writeOpenAIError(w, status, "api_error", "upstream request failed: "+err.Error())
 			s.logFailed(r.Context(), r, incomingModel, targetModel, clientStream,
-				http.StatusBadGateway, err.Error(), body, time.Since(start))
+				status, err.Error(), body, time.Since(start))
 			return
 		}
 

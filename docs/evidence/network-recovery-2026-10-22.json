@@ -1,0 +1,93 @@
+{
+  "date": "2026-10-22",
+  "fault_test": {
+    "model": "deepseek-v4.1-flash-oc",
+    "cases": [
+      {
+        "name": "same_request_recovers_after_three_connect_failures",
+        "status": 200,
+        "elapsed_s": 9.084,
+        "retry_after": null,
+        "text": "OK",
+        "returned_model": "deepseek-v4.1-flash-free",
+        "injected_failures": 3
+      },
+      {
+        "name": "persistent_outage_is_service_unavailable",
+        "status": 503,
+        "elapsed_s": 10.657,
+        "retry_after": "2",
+        "error_code": null,
+        "injected_failures": 6
+      },
+      {
+        "name": "same_alias_recovers_without_auth_reset",
+        "status": 200,
+        "elapsed_s": 4.41,
+        "retry_after": null,
+        "text": "OK",
+        "returned_model": "deepseek-v4.1-flash-free"
+      }
+    ],
+    "result": "PASS"
+  },
+  "live_deployment": {
+    "staging": "PASS",
+    "result": "PASS",
+    "live": [
+      {
+        "port": 8787,
+        "route": "/v1/messages",
+        "requested_model": "deepseek-v4.1-flash-free",
+        "status": 200,
+        "elapsed_s": 2.306,
+        "returned_model": "deepseek-v4.1-flash-free",
+        "answer_received": true
+      },
+      {
+        "port": 8317,
+        "route": "/v1/chat/completions",
+        "requested_model": "deepseek-v4.1-flash-oc",
+        "status": 200,
+        "elapsed_s": 1.914,
+        "returned_model": "deepseek-v4.1-flash-free",
+        "answer_received": true
+      },
+      {
+        "port": 8317,
+        "route": "/v1/messages",
+        "requested_model": "deepseek-v4.1-flash-oc",
+        "status": 200,
+        "elapsed_s": 1.429,
+        "returned_model": "deepseek-v4.1-flash-free",
+        "answer_received": true
+      }
+    ],
+    "rollback": false
+  },
+  "claude_code": {
+    "harness": "Claude Code",
+    "version": "2.1.306",
+    "model": "deepseek-v4.1-flash-oc",
+    "base": "http://127.0.0.1:8317",
+    "result": "PASS",
+    "exit_code": 0,
+    "elapsed_s": 7.485,
+    "tools_used": [
+      "Write",
+      "Read"
+    ],
+    "result_received": true,
+    "actual_file_verified": true,
+    "model_usage": [
+      "deepseek-v4.1-flash-oc"
+    ]
+  },
+  "cpa_source_commit": "4639715",
+  "policy": {
+    "quota_cooldowns_changed": false,
+    "warp_disconnected_for_testing": false,
+    "model_substituted": false,
+    "cooldown_files_cleared": false
+  }
+}

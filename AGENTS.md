@@ -59,6 +59,11 @@
 
 ## Notes
 
+- Reliability acceptance must exercise the exact CPA alias through the full
+  connection chain under a brief outage, a sustained outage, and recovery.
+  A healthy daemon, direct relay success, or one successful model reply does
+  not prove recovery. Keep genuine auth and quota cooldowns intact.
+
 - Live config combines `~/.config/opencode-cc/env` with `~/data/config.json`
   (confirmed 2026-10-15). Inspect saved settings without printing credentials.
   A nonempty `upstreams` pool takes precedence over the legacy base URL;
