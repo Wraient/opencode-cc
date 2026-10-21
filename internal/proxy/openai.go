@@ -29,6 +29,37 @@ type OpenAIRequest struct {
 	Thinking             *OpenAIThinking      `json:"thinking,omitempty"`
 }
 
+// MarshalJSON keeps DeepSeek's reasoning field present even when a historical
+// assistant turn produced no reasoning, or a client stripped it during
+// compaction. An absent field fails tool follow-ups; an empty string is valid.
+// Preserve any actual reasoning supplied by the client or the tool-call cache.
+func (r OpenAIRequest) MarshalJSON() ([]byte, error) {
+	type requestAlias OpenAIRequest
+	if !strings.Contains(strings.ToLower(r.Model), "deepseek") {
+		return json.Marshal(requestAlias(r))
+	}
+	type messageAlias OpenAIMessage
+	type reasoningMessage struct {
+		messageAlias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}
+	var messages []reasoningMessage
+	if r.Messages != nil {
+		messages = make([]reasoningMessage, len(r.Messages))
+	}
+	for i, msg := range r.Messages {
+		messages[i].messageAlias = messageAlias(msg)
+		if msg.Role == "assistant" || msg.ReasoningContent != "" {
+			reasoning := msg.ReasoningContent
+			messages[i].ReasoningContent = &reasoning
+		}
+	}
+	return json.Marshal(struct {
+		requestAlias
+		Messages []reasoningMessage `json:"messages"`
+	}{requestAlias(r), messages})
+}
+
 // OpenAIThinking carries provider-specific thinking controls used by GLM.
 type OpenAIThinking struct {
 	Type          string `json:"type"`

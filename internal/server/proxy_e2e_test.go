@@ -547,6 +547,73 @@ func TestProxyReplaysReasoningContentOnFollowup(t *testing.T) {
 	}
 }
 
+func TestProxyDeepSeekHistoryWithoutReasoning(t *testing.T) {
+	// A fresh process has no tool-call cache. Compacted history and genuinely
+	// reasoning-free tool turns must still serialize the required empty field.
+	for _, model := range []string{"deepseek-v4.1-flash-free", "glm-5"} {
+		t.Run(model, func(t *testing.T) {
+			zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Messages []map[string]json.RawMessage `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				assistants := 0
+				for _, m := range req.Messages {
+					if string(m["role"]) != `"assistant"` {
+						if _, ok := m["reasoning_content"]; ok {
+							t.Error("added reasoning to a non-assistant message")
+						}
+						continue
+					}
+					assistants++
+					if model == "glm-5" {
+						if assistants < 3 && m["reasoning_content"] != nil {
+							t.Error("changed another provider's empty reasoning")
+						}
+						continue
+					}
+					want := `""`
+					if assistants == 3 {
+						want = `"original reasoning"`
+					}
+					if string(m["reasoning_content"]) != want {
+						t.Errorf("assistant %d reasoning = %s, want %s", assistants, m["reasoning_content"], want)
+						http.Error(w, "reasoning_content must be passed back", 400)
+						return
+					}
+				}
+				if assistants != 3 {
+					t.Errorf("assistant messages = %d, want 3", assistants)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+			}))
+			defer zen.Close()
+			srv, _ := newTestServer(t, zen.URL)
+			srv.cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: ""}}
+			body := fmt.Sprintf(`{
+				"model":%q,"max_tokens":128,
+				"tools":[{"name":"read","input_schema":{"type":"object"}}],
+				"messages":[
+					{"role":"user","content":"inspect"},
+					{"role":"assistant","content":"compacted summary"},
+					{"role":"assistant","content":[{"type":"tool_use","id":"uncached_deepseek_turn","name":"read","input":{}}]},
+					{"role":"user","content":[{"type":"tool_result","tool_use_id":"uncached_deepseek_turn","content":"ok"}]},
+					{"role":"assistant","content":[{"type":"thinking","thinking":"original reasoning"},{"type":"text","text":"checked"}]},
+					{"role":"user","content":"continue"}
+				]}`, model)
+			rec := httptest.NewRecorder()
+			srv.Proxy().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestProxyAppliesThinkingBudgetMappingForKimi(t *testing.T) {
 	var got struct {
 		Model           string `json:"model"`
@@ -1235,4 +1302,65 @@ data: {"type":"message_stop"}
 			row.OutputTokens == 3 &&
 			row.StopReason == "end_turn"
 	})
+}
+
+// TestProxyForwardsOutputConfigEffort pins the T3/CLIProxyAPI chain: a
+// /v1/messages request carrying output_config.effort (the effort-2025-11-24
+// beta channel) must reach a chat-bridge target as reasoning_effort and be
+// recorded in the request log. Before this, the level was parsed and dropped,
+// so "max effort" clients silently ran at the provider default.
+func TestProxyForwardsOutputConfigEffort(t *testing.T) {
+	var got struct {
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	zen := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"chatcmpl-effort",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}
+		}`)
+	}))
+	defer zen.Close()
+
+	cfg := config.Default()
+	cfg.UpstreamBase = zen.URL
+	cfg.ZenAPIKey = "test-key"
+	cfg.NativeAnthropic = false
+	cfg.ModelMappings = []config.ModelMapping{{Match: "*", Target: ""}}
+	srv, st := newTestServerWithCfg(t, cfg)
+
+	body := []byte(`{
+		"model":"deepseek-v4.1-flash-free",
+		"max_tokens":32000,
+		"output_config":{"effort":"max"},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.Proxy().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got.ReasoningEffort != "max" {
+		t.Fatalf("upstream reasoning_effort = %q, want max", got.ReasoningEffort)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, err := st.ListRequests(context.Background(), 1)
+		if err == nil && len(rows) == 1 && rows[0].Effort != "" {
+			if rows[0].Effort != "max" {
+				t.Fatalf("logged effort = %q, want max", rows[0].Effort)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rows, _ := st.ListRequests(context.Background(), 1)
+	t.Fatalf("effort was not logged: %+v", rows)
 }

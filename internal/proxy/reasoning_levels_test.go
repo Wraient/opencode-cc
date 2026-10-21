@@ -153,3 +153,34 @@ func TestRequestEffortRoundTrip(t *testing.T) {
 		t.Error("invalid JSON must error")
 	}
 }
+
+func TestChatEffortFor(t *testing.T) {
+	assumed := []string{"minimal", "low", "medium", "high", "xhigh"}
+	cases := []struct{ want, in, out string }{
+		// Top of the universal scale is forwarded verbatim, not weakened.
+		{"max", "max", "max"},
+		{"Max", "max", "max"},
+		{"xhigh", "xhigh", "xhigh"},
+		// Exact hits resolve to canonical form.
+		{"HIGH", "high", "high"},
+		// Out-of-range universal tokens stay as asked.
+		{"medium", "medium", "medium"},
+		// "none" is only forwarded when the model lists it (chat targets
+		// such as MiniMax reject it and would 400 the whole request).
+		{"none", "", ""},
+		// Unknown names clamp instead of wedging the request.
+		{"ultracode", "xhigh", "xhigh"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := ChatEffortFor(c.in, assumed); got != c.out {
+			t.Errorf("ChatEffortFor(%q) = %q, want %q", c.in, got, c.out)
+		}
+	}
+	if got := ChatEffortFor("none", []string{"none", "minimal", "low"}); got != "none" {
+		t.Errorf("learned none: %q", got)
+	}
+	if got := ChatEffortFor("max", nil); got != "max" {
+		t.Errorf("no levels: %q", got)
+	}
+}

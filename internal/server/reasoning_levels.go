@@ -197,9 +197,13 @@ func (s *Server) clampPassthroughEffort(upBody []byte, targetModel, incomingMode
 //     ResolveBridgeEffortWithOutputConfig over the client's thinking /
 //     output_config.effort the builder uses (one-shot clamp retries excluded:
 //     they log their own journal line);
+//   - chat bridge (/v1/messages to any other target): output_config.effort as
+//     applyOutputConfigEffort forwards it;
 //   - Responses passthrough (/v1/responses): the client's reasoning.effort
 //     clamped into the target's scale, exactly like clampPassthroughEffort;
-//   - anything else (chat, native Anthropic): "" — no effort concept there.
+//   - chat completions (/v1/chat/completions): the client's own
+//     reasoning_effort, which the proxy relays untouched;
+//   - anything else (native Anthropic relay): "" — no effort concept there.
 //
 // Best-effort: on any surprise it returns "" and the row shows "—".
 func (s *Server) effortForRequest(path, targetModel string, reqBody []byte) string {
@@ -214,9 +218,6 @@ func (s *Server) effortForRequest(path, targetModel string, reqBody []byte) stri
 		return proxy.ClampEffort(effort, s.levelsForModel(targetModel))
 	}
 	if path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/") {
-		if !proxy.IsResponsesNativeModel(targetModel) {
-			return ""
-		}
 		// Probe only the two fields the bridge reads; the full body can
 		// carry megabytes of tool-result images.
 		var probe struct {
@@ -225,6 +226,19 @@ func (s *Server) effortForRequest(path, targetModel string, reqBody []byte) stri
 		}
 		if err := json.Unmarshal(reqBody, &probe); err != nil {
 			return ""
+		}
+		if !proxy.IsResponsesNativeModel(targetModel) {
+			// Mirror applyOutputConfigEffort: a thinking-mapping model takes
+			// its effort through that channel instead.
+			if s != nil && s.cfg != nil {
+				if _, mapped := s.cfg.Snapshot().ResolveThinkingBudgetMapping(targetModel); mapped {
+					return ""
+				}
+			}
+			return outputConfigEffortFor(&proxy.AnthropicRequest{
+				Thinking:     probe.Thinking,
+				OutputConfig: probe.OutputConfig,
+			}, s.levelsForModel(targetModel))
 		}
 		var outputEffort string
 		if probe.OutputConfig != nil {
@@ -235,6 +249,15 @@ func (s *Server) effortForRequest(path, targetModel string, reqBody []byte) stri
 			def = s.cfg.Snapshot().BridgeDefaultEffort
 		}
 		return proxy.ResolveBridgeEffortWithOutputConfig(probe.Thinking, outputEffort, s.levelsForModel(targetModel), def)
+	}
+	if path == "/v1/chat/completions" || strings.HasPrefix(path, "/v1/chat/completions/") {
+		var probe struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+		}
+		if err := json.Unmarshal(reqBody, &probe); err != nil {
+			return ""
+		}
+		return proxy.ChatEffortFor(probe.ReasoningEffort, s.levelsForModel(targetModel))
 	}
 	return ""
 }

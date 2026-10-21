@@ -64,6 +64,12 @@
   A healthy daemon, direct relay success, or one successful model reply does
   not prove recovery. Keep genuine auth and quota cooldowns intact.
 
+- Claude Code/DeepSeek integration repairs target the connection chain
+  **Claude Code → CLIProxyAPI → opencode-cc → OpenCode Zen**. Keep the
+  requested harness/model and use generated tasks as end-to-end connection
+  evidence. Do not expand this into changes to DeepSeek itself or polishing
+  the generated application's code.
+
 - Live config combines `~/.config/opencode-cc/env` with `~/data/config.json`
   (confirmed 2026-10-15). Inspect saved settings without printing credentials.
   A nonempty `upstreams` pool takes precedence over the legacy base URL;

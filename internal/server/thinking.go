@@ -54,6 +54,38 @@ func applyThinkingBudgetMapping(req *proxy.OpenAIRequest, areq *proxy.AnthropicR
 	}
 }
 
+// outputConfigEffortFor returns the chat `reasoning_effort` implied by a
+// client's output_config.effort (the effort-2025-11-24 beta channel used by
+// current Claude Code and T3), or "" when the field is absent.
+func outputConfigEffortFor(areq *proxy.AnthropicRequest, levels []string) string {
+	if areq == nil || areq.OutputConfig == nil {
+		return ""
+	}
+	return proxy.ChatEffortFor(areq.OutputConfig.Effort, levels)
+}
+
+// applyOutputConfigEffort carries output_config.effort onto the chat bridge's
+// reasoning_effort field. Without this the level is parsed, the request runs
+// at the provider default, and the client's "max effort" is silently ignored
+// for every non-Responses target (deepseek, glm, kimi, ...).
+func applyOutputConfigEffort(req *proxy.OpenAIRequest, areq *proxy.AnthropicRequest, targetModel string, cfg *config.Config, levels []string) {
+	if req == nil || areq == nil {
+		return
+	}
+	// A thinking-budget mapping already chose how this model takes its effort
+	// (thinking object / budget / reasoning_effort); that is the more specific
+	// instruction, so don't stack a second channel on top.
+	if req.ReasoningEffort != "" {
+		return
+	}
+	if cfg != nil {
+		if _, ok := cfg.ResolveThinkingBudgetMapping(targetModel); ok {
+			return
+		}
+	}
+	req.ReasoningEffort = outputConfigEffortFor(areq, levels)
+}
+
 func applyResponsesThinkingMapping(req *proxy.OpenAIRequest, targetModel string, cfg *config.Config) {
 	if req == nil || cfg == nil {
 		return

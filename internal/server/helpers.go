@@ -65,6 +65,9 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 	var lastErr error
 	var lastStatus int
 	var lastDetail string
+	affinityKey := zenAffinityKey(template, body)
+	affinity := cachedZenAffinity(affinityKey)
+	failovers := 0
 	// Timeouts get up to 3 attempts (30s header timeout each): Zen free-tier
 	// intermittently stalls 30-90s on big histories before first byte.
 	// Upstream 5xx gets up to 2 attempts: retrying a struggling upstream
@@ -72,15 +75,25 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			if template.Context().Err() != nil {
-				break // downstream went away; don't hammer upstream
+				return nil, template.Context().Err()
 			}
-			time.Sleep(2 * time.Second)
+			timer := time.NewTimer(2 * time.Second)
+			select {
+			case <-template.Context().Done():
+				timer.Stop()
+				return nil, template.Context().Err()
+			case <-timer.C:
+			}
 		}
 		req := template.Clone(template.Context())
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
+		applyZenAffinity(req, affinity)
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode < 500 {
+			if resp.StatusCode < 400 && affinity != "" {
+				rememberZenAffinity(affinityKey, affinity)
+			}
 			return resp, nil
 		}
 		if err != nil {
@@ -96,8 +109,20 @@ func doUpstreamWithRetry(client *http.Client, template *http.Request, body []byt
 		lastErr = nil
 		lastStatus = resp.StatusCode
 		lastDetail = "upstream HTTP " + resp.Status
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
+		if affinityKey != "" && zenEndpointUnavailable(lastStatus, errorBody) {
+			rememberZenAffinity(affinityKey, "")
+			lastDetail += ": Endpoint is unavailable"
+			if failovers < zenFailoverLimit {
+				if next := newZenAffinity(); next != "" {
+					affinity = next
+					failovers++
+					log.Printf("opencode-cc: Zen endpoint unavailable; retrying with alternate affinity (%d/%d)", failovers, zenFailoverLimit)
+					continue
+				}
+			}
+		}
 		if attempt >= 1 {
 			break
 		}

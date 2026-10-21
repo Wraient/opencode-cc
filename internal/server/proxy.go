@@ -63,6 +63,7 @@ func (s *Server) Proxy() http.HandlerFunc {
 
 		oreq := proxy.ConvertRequest(&areq, func(string) string { return targetModel })
 		applyThinkingBudgetMapping(oreq, &areq, targetModel, cfg)
+		applyOutputConfigEffort(oreq, &areq, targetModel, cfg, s.levelsForModel(targetModel))
 		proxy.ApplyOpenAIPromptCache(oreq, promptCacheOptionsFromConfig(cfg))
 		stickyKey := proxy.AnthropicPromptCacheHint(&areq)
 		if oreq.PromptCacheKey != "" {

@@ -74,6 +74,42 @@ func ClampEffort(want string, levels []string) string {
 // decide which end an out-of-range (but recognized) token clamps to.
 var universalEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
+// ChatEffortFor validates an effort name destined for a chat-completions
+// `reasoning_effort` field. Names on the universal scale (minimal, low,
+// medium, high, xhigh, max) pass through verbatim when the model has no
+// exact match — Zen's current chat models accept the whole set, and rewriting
+// "max" to "xhigh" would silently weaken a client that asked for the top
+// level. Anything else clamps into levels so an unrecognized token can never
+// wedge the request. Empty input returns "".
+//
+// "none" is special-cased: it means "no thinking", several chat targets reject
+// it outright (MiniMax answers 400 invalid params), and it is not part of the
+// assumed default scale. It is forwarded only when the model is known to list
+// it; otherwise the field is omitted so the upstream default stands instead of
+// failing the request.
+func ChatEffortFor(want string, levels []string) string {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return ""
+	}
+	if want == "none" {
+		if canonical, ok := NormalizeEffort(want, levels); ok {
+			return canonical
+		}
+		return ""
+	}
+	if canonical, ok := NormalizeEffort(want, levels); ok {
+		return canonical
+	}
+	if indexFold(universalEffortOrder, want) >= 0 {
+		return want
+	}
+	if len(levels) == 0 {
+		return ""
+	}
+	return ClampEffort(want, levels)
+}
+
 func indexFold(list []string, want string) int {
 	for i, s := range list {
 		if strings.EqualFold(s, want) {
