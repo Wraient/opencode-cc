@@ -1,0 +1,41 @@
+[
+  {
+    "hop": "relay-to-provider",
+    "path": "/inference/v1/chat/completions",
+    "model": "deepseek-v4.1-flash-free",
+    "reasoning_effort": "max",
+    "status": 200,
+    "reasoning_chars": 348,
+    "content_chars": 9
+  },
+  {
+    "hop": "cpa-to-relay",
+    "path": "/v1/messages?beta=true",
+    "model": "deepseek-v4.1-flash-free",
+    "thinking": {
+      "type": "adaptive",
+      "display": "omitted"
+    },
+    "output_config": {
+      "effort": "max"
+    },
+    "status": 200,
+    "reasoning_chars": 0,
+    "content_chars": 0
+  },
+  {
+    "hop": "claude-to-cpa",
+    "path": "/v1/messages?beta=true",
+    "model": "deepseek-v4.1-flash-oc",
+    "thinking": {
+      "type": "adaptive",
+      "display": "omitted"
+    },
+    "output_config": {
+      "effort": "max"
+    },
+    "status": 200,
+    "reasoning_chars": 0,
+    "content_chars": 0
+  }
+]

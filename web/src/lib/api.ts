@@ -53,6 +53,7 @@ export interface LogRow {
   effort: string;
   req_body?: string;
   resp_body?: string;
+  resp_headers?: string;
 }
 
 export interface UpstreamView {

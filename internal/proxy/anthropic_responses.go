@@ -460,11 +460,7 @@ func ConvertResponsesToAnthropicResponse(raw []byte, incomingModel string) (*Ant
 		}
 	}
 	if in.Usage != nil {
-		out.Usage = AnthropicUsage{
-			InputTokens:          in.Usage.InputTokens,
-			OutputTokens:         in.Usage.OutputTokens,
-			CacheReadInputTokens: in.Usage.InputTokensDetails.CachedTokens,
-		}
+		out.Usage = AnthropicUsageFromOpenAI(in.Usage.InputTokens, in.Usage.InputTokensDetails.CachedTokens, in.Usage.OutputTokens)
 	}
 	if out.StopReason != nil && *out.StopReason == "tool_use" {
 		// keep tool_use even on incomplete streams; max_tokens only wins

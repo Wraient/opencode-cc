@@ -235,7 +235,7 @@ func (s *Server) relayAnthropicResponsesAggregated(
 		stop = *aresp.StopReason
 	}
 	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
-		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.TotalInputTokens(), aresp.Usage.OutputTokens,
 		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 		stop, string(reqBody), mustJSON(aresp), time.Since(start))
 }
@@ -382,7 +382,7 @@ func (s *Server) relayAnthropicResponsesJSON(
 		stop = *aresp.StopReason
 	}
 	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, false, http.StatusOK,
-		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.TotalInputTokens(), aresp.Usage.OutputTokens,
 		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 		stop, string(reqBody), mustJSON(aresp), time.Since(start))
 }

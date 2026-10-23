@@ -313,6 +313,19 @@ type AnthropicUsage struct {
 	ServerToolUse            *AnthropicServerToolUse `json:"server_tool_use,omitempty"`
 }
 
+// TotalInputTokens includes fresh input, cache reads, and cache writes.
+func (u AnthropicUsage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+}
+
+// AnthropicUsageFromOpenAI splits inclusive OpenAI input into Anthropic's
+// disjoint categories. Clamp malformed upstream counts to keep usage valid.
+func AnthropicUsageFromOpenAI(input, cached, output int) AnthropicUsage {
+	input = max(0, input)
+	cached = min(input, max(0, cached))
+	return AnthropicUsage{InputTokens: input - cached, CacheReadInputTokens: cached, OutputTokens: output}
+}
+
 type AnthropicServerToolUse struct {
 	WebSearchRequests int `json:"web_search_requests,omitempty"`
 }

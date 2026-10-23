@@ -266,8 +266,9 @@ func (s *Server) relayResponsesAnthropicJSON(
 		}
 		copyOpenAIHeaders(w.Header(), resp.Header, false)
 		writeOpenAIError(w, resp.StatusCode, openAIErrorTypeForStatus(resp.StatusCode), message)
-		s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
-			resp.StatusCode, message, reqBody, time.Since(start))
+		s.logFailedResponse(r.Context(), r, incomingModel, targetModel, stream,
+			resp.StatusCode, message, reqBody, time.Since(start),
+			&upstreamFailure{Status: resp.StatusCode, Header: resp.Header, Body: raw})
 		return
 	}
 
@@ -287,7 +288,7 @@ func (s *Server) relayResponsesAnthropicJSON(
 		stopReason = *anthResp.StopReason
 	}
 	s.logSuccessWithCache(r.Context(), r, incomingModel, targetModel, stream, http.StatusOK,
-		anthResp.Usage.InputTokens, anthResp.Usage.OutputTokens,
+		anthResp.Usage.TotalInputTokens(), anthResp.Usage.OutputTokens,
 		anthResp.Usage.CacheReadInputTokens, anthResp.Usage.CacheCreationInputTokens,
 		stopReason,
 		string(reqBody), mustJSON(out), time.Since(start))
@@ -393,8 +394,9 @@ func (s *Server) relayResponsesJSON(
 		if message == "" {
 			message = strings.TrimSpace(string(raw))
 		}
-		s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
-			resp.StatusCode, message, reqBody, time.Since(start))
+		s.logFailedResponse(r.Context(), r, incomingModel, targetModel, stream,
+			resp.StatusCode, message, reqBody, time.Since(start),
+			&upstreamFailure{Status: resp.StatusCode, Header: resp.Header, Body: raw})
 		return
 	}
 
@@ -580,7 +582,7 @@ func (s *Server) relayResponsesAnthropicStream(
 		switch payload.Type {
 		case "message_start":
 			if payload.Message != nil {
-				inputTokens = payload.Message.Usage.InputTokens
+				inputTokens = payload.Message.Usage.TotalInputTokens()
 				cachedInputTokens = payload.Message.Usage.CacheReadInputTokens
 				cacheCreationInputTokens = payload.Message.Usage.CacheCreationInputTokens
 				converter.SetUsage(inputTokens, outputTokens)

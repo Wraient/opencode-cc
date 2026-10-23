@@ -82,7 +82,7 @@ func (s *Server) handleWebSearchShim(
 			} else {
 				writeJSON(w, http.StatusOK, aresp)
 				s.logSuccessWithCache(r.Context(), r, areq.Model, targetModel, false, http.StatusOK,
-					aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+					aresp.Usage.TotalInputTokens(), aresp.Usage.OutputTokens,
 					aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 					stopReasonStr(aresp.StopReason),
 					string(reqBody), mustJSON(aresp), time.Since(start))
@@ -108,7 +108,7 @@ func (s *Server) handleWebSearchShim(
 		},
 	}
 	if queryResp != nil {
-		answerResp.Usage.InputTokens = queryResp.Usage.PromptTokens
+		answerResp.Usage.InputTokens = proxy.AnthropicUsageFromOpenAI(queryResp.Usage.PromptTokens, queryResp.Usage.CachedPromptTokens(), queryResp.Usage.CompletionTokens).InputTokens
 		answerResp.Usage.OutputTokens = queryResp.Usage.CompletionTokens
 		answerResp.Usage.CacheReadInputTokens = queryResp.Usage.CachedPromptTokens()
 	}
@@ -134,9 +134,9 @@ func (s *Server) handleWebSearchShim(
 			if len(answerResp.Content) == len(searchBlocks) {
 				answerResp.Content = append(answerResp.Content, fallbackSearchSummary(results))
 			}
-			answerResp.Usage.InputTokens += finalOpenAIResp.Usage.PromptTokens
+			answerResp.Usage.InputTokens += finalAnthResp.Usage.InputTokens
 			answerResp.Usage.OutputTokens += finalOpenAIResp.Usage.CompletionTokens
-			answerResp.Usage.CacheReadInputTokens += finalOpenAIResp.Usage.CachedPromptTokens()
+			answerResp.Usage.CacheReadInputTokens += finalAnthResp.Usage.CacheReadInputTokens
 			answerResp.Usage.CacheCreationInputTokens += finalAnthResp.Usage.CacheCreationInputTokens
 			if finalAnthResp.StopReason != nil && *finalAnthResp.StopReason == "max_tokens" {
 				maxTokens := "max_tokens"
@@ -151,7 +151,7 @@ func (s *Server) handleWebSearchShim(
 	}
 	writeJSON(w, http.StatusOK, answerResp)
 	s.logSuccessWithCache(r.Context(), r, areq.Model, targetModel, false, http.StatusOK,
-		answerResp.Usage.InputTokens, answerResp.Usage.OutputTokens,
+		answerResp.Usage.TotalInputTokens(), answerResp.Usage.OutputTokens,
 		answerResp.Usage.CacheReadInputTokens, answerResp.Usage.CacheCreationInputTokens,
 		stopReasonStr(answerResp.StopReason),
 		string(reqBody), mustJSON(answerResp), time.Since(start))
@@ -284,7 +284,7 @@ func (s *Server) writeSyntheticAnthropicStream(
 	write("message_stop", map[string]string{"type": "message_stop"})
 
 	s.logSuccessWithCache(r.Context(), r, inModel, targetModel, true, http.StatusOK,
-		resp.Usage.InputTokens, resp.Usage.OutputTokens,
+		resp.Usage.TotalInputTokens(), resp.Usage.OutputTokens,
 		resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens,
 		stopReason, string(reqBody), responseLog.String(), time.Since(start))
 }

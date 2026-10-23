@@ -207,7 +207,7 @@ func TestConvertResponsesToAnthropicResponse(t *testing.T) {
 		!strings.Contains(string(tu.Input), "Paris") {
 		t.Errorf("tool_use block: %+v", tu)
 	}
-	if out.Usage.InputTokens != 10 || out.Usage.OutputTokens != 5 || out.Usage.CacheReadInputTokens != 2 {
+	if out.Usage.InputTokens != 8 || out.Usage.OutputTokens != 5 || out.Usage.CacheReadInputTokens != 2 {
 		t.Errorf("usage: %+v", out.Usage)
 	}
 }
@@ -347,7 +347,8 @@ func TestConvertAnthropicOutputConfigEffort(t *testing.T) {
 	}
 }
 
-func TestConvertAnthropicReasoningTopBands(t *testing.T) {	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
+func TestConvertAnthropicReasoningTopBands(t *testing.T) {
+	msg := []AnthropicMessage{{Role: "user", Content: AnthropicMessageContent{Text: "hi", IsStr: true}}}
 	muse := []string{"minimal", "low", "medium", "high", "xhigh"}
 	effortOf := func(thinking *AnthropicThinking, levels []string, def string) string {
 		t.Helper()

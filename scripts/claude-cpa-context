@@ -1,0 +1,28 @@
+#!/usr/bin/python3
+"""Apply DeepSeek context limits at launch; otherwise preserve T3's environment."""
+import os
+import sys
+
+CLAUDE = "/home/wraient/.npm-global/bin/claude"
+DEEPSEEK = "deepseek-v4.1-flash-oc"
+
+
+def selected_model(args):
+    model = None
+    for i, arg in enumerate(args):
+        if arg == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+        elif arg.startswith("--model="):
+            model = arg.split("=", 1)[1]
+    return model
+
+
+def main():
+    if selected_model(sys.argv[1:]) == DEEPSEEK:
+        os.environ["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = "260000"
+        os.environ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "200000"
+    os.execv(CLAUDE, [CLAUDE, *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    main()

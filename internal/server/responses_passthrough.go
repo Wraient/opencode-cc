@@ -321,8 +321,9 @@ func (s *Server) relayResponsesPassthroughJSON(
 		if message == "" {
 			message = strings.TrimSpace(string(raw))
 		}
-		s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
-			resp.StatusCode, message, reqBody, time.Since(start))
+		s.logFailedResponse(r.Context(), r, incomingModel, targetModel, stream,
+			resp.StatusCode, message, reqBody, time.Since(start),
+			&upstreamFailure{Status: resp.StatusCode, Header: resp.Header, Body: raw})
 		return
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {

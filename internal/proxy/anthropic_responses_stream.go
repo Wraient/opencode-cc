@@ -547,9 +547,7 @@ func (c *ResponsesToAnthropicStreamer) applyUsage(u *responsesStreamUsage) {
 	if u == nil {
 		return
 	}
-	c.usage.InputTokens = u.InputTokens
-	c.usage.OutputTokens = u.OutputTokens
-	c.usage.CacheReadInputTokens = u.EffectiveCachedTokens()
+	c.usage = AnthropicUsageFromOpenAI(u.InputTokens, u.EffectiveCachedTokens(), u.OutputTokens)
 }
 
 // Finalize emits message_delta/message_stop. Call once after the upstream
@@ -615,7 +613,7 @@ func (c *ResponsesToAnthropicStreamer) EmitError(typ, msg string) error {
 
 // InputTokens, OutputTokens and CachedTokens report the usage observed on
 // the upstream stream (zeros when the run never reached response.completed).
-func (c *ResponsesToAnthropicStreamer) InputTokens() int  { return c.usage.InputTokens }
+func (c *ResponsesToAnthropicStreamer) InputTokens() int  { return c.usage.TotalInputTokens() }
 func (c *ResponsesToAnthropicStreamer) OutputTokens() int { return c.usage.OutputTokens }
 func (c *ResponsesToAnthropicStreamer) CachedTokens() int { return c.usage.CacheReadInputTokens }
 

@@ -86,7 +86,7 @@ func TestStreamConversion(t *testing.T) {
 	}
 	// Usage carried in message_delta.
 	for _, want := range []string{
-		`"input_tokens":10`,
+		`"input_tokens":4`,
 		`"cache_creation_input_tokens":0`,
 		`"cache_read_input_tokens":6`,
 		`"output_tokens":20`,

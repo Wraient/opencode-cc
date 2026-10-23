@@ -1,0 +1,17 @@
+{
+  "model": "deepseek-v4.1-flash-oc",
+  "provider": "claudeAgent_2",
+  "global_limits": {
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "460000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000"
+  },
+  "launched_limits": {
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "260000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
+  },
+  "exit_code": 0,
+  "is_error": false,
+  "context_window": 260000,
+  "result": "```javascript\nfunction identity(value) {\n  return value;\n}\n```",
+  "result_status": "PASS"
+}

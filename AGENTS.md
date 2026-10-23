@@ -70,6 +70,16 @@
   evidence. Do not expand this into changes to DeepSeek itself or polishing
   the generated application's code.
 
+- CPA holds Zen 429s (2026-10-22, CPA `8.0.4+local3`): the `claude-2` group
+  (prefix `oc`, this relay) has `rate-limit-hold-seconds: 180`. CPA keeps a
+  rate-limited request open and retries it with 2→4→8→15s backoff for up to
+  3 min, and never stores a long cooldown. Zen's free-tier `Retry-After`
+  counts to 00:00 UTC and is not a recovery time (81927s sent, cleared in
+  <1h). A 429 that still reaches Claude Code means Zen limited this relay
+  for the full 3 min. On 2026-10-22 only the WARP egress was limited: the
+  same binary and credential without `HTTP(S)_PROXY` returned 200. See
+  `~/.cli-proxy-api/README.md` Troubleshooting 10–12.
+
 - Live config combines `~/.config/opencode-cc/env` with `~/data/config.json`
   (confirmed 2026-10-15). Inspect saved settings without printing credentials.
   A nonempty `upstreams` pool takes precedence over the legacy base URL;
@@ -92,3 +102,20 @@
   `HTTP_PROXY`/`HTTPS_PROXY` settings; other apps remain direct. WARP proxy mode
   in this installed release requires MASQUE. Use `warp-cli status` and a
   proxied Cloudflare trace to verify the tunnel before inference tests.
+
+## T3 Claude CPA context policy (2026-10-23)
+
+- Keep one Claude CPA provider (`claudeAgent_2`), including DeepSeek; do not
+  create a separate DeepSeek provider.
+- Preserve shared defaults: context maximum 460000, auto-compact window 400000.
+  DeepSeek `deepseek-v4.1-flash-oc` alone must launch with maximum 260000 and
+  auto-compact window 200000. Do not change other models' limits for DeepSeek.
+- The provider executable is `~/.local/bin/claude-cpa-context`, sourced from
+  `scripts/claude-cpa-context`. It overrides only DeepSeek's launch environment
+  and otherwise forwards arguments and environment to the real Claude CLI.
+- Claude's maximum-context environment is fixed for a process. T3 can switch
+  models live; stop/relaunch the thread when switching between DeepSeek and
+  other models so the launcher applies the correct limits. Do not claim this
+  launch wrapper applies context limits dynamically to live model switches.
+- These client settings do not increase upstream model capacity. DeepSeek's
+  measured free-route input ceiling is about 261K.

@@ -524,7 +524,7 @@ func TestConvertAnthropicResponseToResponses(t *testing.T) {
 		out.Output[1].Arguments != `{"command":"Get-ChildItem"}` {
 		t.Fatalf("tool output = %+v", out.Output[1])
 	}
-	if out.Usage == nil || out.Usage.TotalTokens != 18 ||
+	if out.Usage == nil || out.Usage.TotalTokens != 23 ||
 		out.Usage.InputTokensDetails.CachedTokens != 5 {
 		t.Fatalf("usage = %+v", out.Usage)
 	}

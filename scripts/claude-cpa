@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Run Claude Code through the local CLIProxyAPI with explicit model capabilities."""
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+
+args = sys.argv[1:]
+conf = Path(os.environ.get('CLAUDE_CPA_CONF', str(Path.home() / '.config/claude-cpa/models.env')))
+settings = {}
+if conf.exists():
+    for line in conf.read_text().splitlines():
+        words = shlex.split(line, comments=True)
+        if words and '=' in words[0]:
+            key, value = words[0].split('=', 1)
+            settings[key] = value
+
+slot = settings.get('DEFAULT_SLOT', 'opus')
+upstream = os.environ.get('ANTHROPIC_BASE_URL', settings.get('DEFAULT_UPSTREAM', 'http://127.0.0.1:8317'))
+slots = {s: settings.get(f'SLOT_{s.upper()}_MODEL', '') for s in ('opus', 'sonnet', 'haiku', 'fable')}
+forward = []
+show = False
+upstream_given = False
+i = 0
+while i < len(args):
+    arg = args[i]
+    flag, sep, value = arg.partition('=')
+    if flag in ('--slot', '--upstream', '--opus', '--sonnet', '--haiku', '--fable'):
+        if not sep:
+            i += 1
+            if i >= len(args):
+                sys.exit(f'claude-cpa: {flag} requires a value')
+            value = args[i]
+        if flag == '--slot':
+            slot = value
+        elif flag == '--upstream':
+            upstream, upstream_given = value, True
+        else:
+            slots[flag[2:]] = value
+    elif arg == '--show-config':
+        show = True
+    else:
+        forward.append(arg)
+    i += 1
+if slot not in slots or not slots[slot]:
+    sys.exit(f'claude-cpa: no model configured for slot {slot!r}')
+
+def option(name, default=None):
+    for i, arg in enumerate(forward):
+        if arg == name and i + 1 < len(forward):
+            return forward[i + 1]
+        if arg.startswith(name + '='):
+            return arg.split('=', 1)[1]
+    return default
+
+model = option('--model', slots[slot])
+effort = option('--effort', settings.get('DEFAULT_EFFORT', 'xhigh'))
+if show:
+    print(json.dumps(dict(upstream=upstream, slot=slot, model=model, effort=effort, slots=slots), indent=2))
+    sys.exit(0)
+claude = shutil.which('claude')
+if not claude:
+    sys.exit('claude-cpa: claude is not installed in PATH')
+if option('--settings') is not None:
+    if upstream_given:
+        sys.exit('claude-cpa: put the upstream in your explicit --settings')
+    os.execv(claude, [claude, *forward])
+if upstream.rstrip('/') in ('http://127.0.0.1:8317', 'http://localhost:8317') and os.environ.get('CLAUDE_CPA_NO_AUTOSTART') != '1':
+    subprocess.run(['systemctl', '--user', 'start', 'cliproxyapi.service'], check=True)
+env = os.environ.copy()
+env.update(ANTHROPIC_BASE_URL=upstream, ANTHROPIC_MODEL=model,
+           ANTHROPIC_CUSTOM_MODEL_OPTION=model,
+           ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES='effort,max_effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking',
+           CLAUDE_CODE_EFFORT_LEVEL=effort)
+for name, value in slots.items():
+    env[f'ANTHROPIC_DEFAULT_{name.upper()}_MODEL'] = value
+# Preserve caller credentials; read the CPA key at launch without putting it in argv.
+if not env.get('ANTHROPIC_AUTH_TOKEN') and not env.get('ANTHROPIC_API_KEY'):
+    key_file = Path(env.get('CLAUDE_CPA_KEY_FILE', str(Path.home() / '.cli-proxy-api/api-key.txt')))
+    env['ANTHROPIC_API_KEY'] = key_file.read_text().strip()
+if option('--model') is None:
+    forward += ['--model', model]
+if option('--effort') is None:
+    forward += ['--effort', effort]
+# A settings overlay also wins over env values loaded from ~/.claude/settings.json.
+# In particular, a saved CLAUDE_CODE_EFFORT_LEVEL=max must not override --effort low.
+overlay_env = {key: value for key, value in env.items()
+               if key in ('ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
+                          'ANTHROPIC_CUSTOM_MODEL_OPTION',
+                          'ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES',
+                          'CLAUDE_CODE_EFFORT_LEVEL')
+               or key.startswith('ANTHROPIC_DEFAULT_')}
+forward = ['--settings', json.dumps({'effortLevel': effort, 'env': overlay_env}), *forward]
+os.execve(claude, [claude, *forward], env)

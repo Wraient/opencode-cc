@@ -341,7 +341,7 @@ func TestResponsesNativeAnthropicNonStream(t *testing.T) {
 	if len(out.Output) != 1 || out.Output[0].Content[0].Text != "native OK" {
 		t.Fatalf("unexpected output: %s", raw)
 	}
-	if out.Usage.InputTokens != 11 || out.Usage.OutputTokens != 2 ||
+	if out.Usage.InputTokens != 15 || out.Usage.OutputTokens != 2 ||
 		out.Usage.InputTokensDetails.CachedTokens != 4 {
 		t.Fatalf("unexpected usage: %+v", out.Usage)
 	}
@@ -350,7 +350,7 @@ func TestResponsesNativeAnthropicNonStream(t *testing.T) {
 		return row.Path == "/v1/responses" &&
 			row.IncomingModel == "client-model" &&
 			row.TargetModel == "claude-sonnet-4-5" &&
-			row.InputTokens == 11 &&
+			row.InputTokens == 15 &&
 			row.OutputTokens == 2 &&
 			row.StopReason == "end_turn"
 	})

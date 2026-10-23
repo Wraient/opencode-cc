@@ -529,15 +529,16 @@ func (c *StreamConverter) Finalize(stopReason string) error {
 	stop := mapFinishReason(reason)
 	c.lastStop = *stop
 	c.lastUpstreamFinish = c.pendingFinish
+	usage := AnthropicUsageFromOpenAI(c.input, c.cachedInput, c.output)
 	payload := streamMessageDelta{
 		Type:  "message_delta",
 		Delta: streamMessageBody{StopReason: stop, StopSequence: c.stopSeq},
 		// Usage is emitted unconditionally (output_tokens may be 0 if the
 		// upstream never reported usage). Claude Code relies on its presence.
 		Usage: streamDeltaUsage{
-			InputTokens:              c.input,
+			InputTokens:              usage.InputTokens,
 			CacheCreationInputTokens: 0,
-			CacheReadInputTokens:     c.cachedInput,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			OutputTokens:             c.output,
 		},
 	}

@@ -290,8 +290,9 @@ func (s *Server) relayOpenAIJSON(
 		if extracted := extractOpenAIError(raw); extracted != "" {
 			msg = extracted
 		}
-		s.logFailed(r.Context(), r, incomingModel, targetModel, stream,
-			status, msg, reqBody, time.Since(start))
+		s.logFailedResponse(r.Context(), r, incomingModel, targetModel, stream,
+			status, msg, reqBody, time.Since(start),
+			&upstreamFailure{Status: status, Header: resp.Header, Body: raw})
 		return
 	}
 

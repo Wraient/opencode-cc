@@ -100,7 +100,7 @@ func TestResponsesStreamTextAndToolCall(t *testing.T) {
 	if msgDelta.Delta["stop_reason"] != "tool_use" {
 		t.Errorf("stop_reason: %v", msgDelta.Delta)
 	}
-	if msgDelta.Usage["input_tokens"].(float64) != 7 || msgDelta.Usage["output_tokens"].(float64) != 3 {
+	if msgDelta.Usage["input_tokens"].(float64) != 6 || msgDelta.Usage["output_tokens"].(float64) != 3 {
 		t.Errorf("usage: %v", msgDelta.Usage)
 	}
 }

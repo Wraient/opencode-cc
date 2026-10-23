@@ -236,6 +236,14 @@ function DetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
                   Response
                 </TabBtn>
               </div>
+              {tab === "resp" && row.resp_headers && (
+                <div className="mb-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+                    Upstream response headers
+                  </div>
+                  <CodeBlock>{prettyJson(row.resp_headers) || row.resp_headers}</CodeBlock>
+                </div>
+              )}
               <CodeBlock>
                 {prettyJson(tab === "req" ? row.req_body || "" : row.resp_body || "") ||
                   "(empty)"}

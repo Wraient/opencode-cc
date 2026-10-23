@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -278,7 +279,8 @@ func (s *Server) relayNativeAnthropicJSON(
 		if msg == "" {
 			msg = strings.TrimSpace(string(raw))
 		}
-		s.logFailed(r.Context(), r, inModel, target, stream, status, msg, reqBody, time.Since(start))
+		s.logFailedResponse(r.Context(), r, inModel, target, stream, status, msg, reqBody, time.Since(start),
+			&upstreamFailure{Status: status, Header: resp.Header, Body: raw})
 		return
 	}
 
@@ -288,7 +290,7 @@ func (s *Server) relayNativeAnthropicJSON(
 	}
 	_ = json.Unmarshal(raw, &out)
 	s.logSuccessWithCache(r.Context(), r, inModel, target, stream, status,
-		out.Usage.InputTokens, out.Usage.OutputTokens,
+		out.Usage.TotalInputTokens(), out.Usage.OutputTokens,
 		out.Usage.CacheReadInputTokens, out.Usage.CacheCreationInputTokens,
 		stopReasonStr(out.StopReason),
 		string(reqBody), string(raw), time.Since(start))
@@ -406,7 +408,7 @@ func (r *nativeAnthropicStreamRelay) observe(p []byte) {
 		if event.Message.Usage.InputTokens > 0 ||
 			event.Message.Usage.CacheReadInputTokens > 0 ||
 			event.Message.Usage.CacheCreationInputTokens > 0 {
-			r.inputTokens = event.Message.Usage.InputTokens
+			r.inputTokens = event.Message.Usage.TotalInputTokens()
 			r.cachedInputTokens = event.Message.Usage.CacheReadInputTokens
 			r.cacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
 		}
@@ -447,7 +449,10 @@ func (s *Server) passUpstreamError(w http.ResponseWriter, resp *http.Response, r
 		errType = "timeout_error"
 	}
 	writeAnthropicError(w, resp.StatusCode, errType, msg)
-	s.logFailed(r.Context(), r, inModel, target, false, resp.StatusCode, msg, reqBody, time.Since(start))
+	// Keep what the upstream actually said: the reset time lives in
+	// Retry-After / x-ratelimit-* and in the 429 body, not in the message.
+	s.logFailedResponse(r.Context(), r, inModel, target, false, resp.StatusCode, msg, reqBody, time.Since(start),
+		&upstreamFailure{Status: resp.StatusCode, Header: resp.Header, Body: eb})
 }
 
 // stampCooldown writes the resolved cooldown onto the downstream response.
@@ -495,7 +500,7 @@ func (s *Server) handleNonStreamResponse(w http.ResponseWriter, resp *http.Respo
 
 	// Log a success row.
 	s.logSuccessWithCache(r.Context(), r, inModel, target, false, http.StatusOK,
-		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.TotalInputTokens(), aresp.Usage.OutputTokens,
 		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 		stopReasonStr(aresp.StopReason),
 		string(reqBody), mustJSON(aresp), time.Since(start))
@@ -529,7 +534,7 @@ func (s *Server) handleAggregatedChatResponse(w http.ResponseWriter, resp *http.
 	}
 	writeJSON(w, http.StatusOK, aresp)
 	s.logSuccessWithCache(r.Context(), r, inModel, target, false, http.StatusOK,
-		aresp.Usage.InputTokens, aresp.Usage.OutputTokens,
+		aresp.Usage.TotalInputTokens(), aresp.Usage.OutputTokens,
 		aresp.Usage.CacheReadInputTokens, aresp.Usage.CacheCreationInputTokens,
 		stopReasonStr(aresp.StopReason), string(reqBody), mustJSON(aresp), time.Since(start))
 }
@@ -941,6 +946,22 @@ func (s *Server) recordUsage(apiKey *store.APIKey, tokens, requests int) {
 }
 
 func (s *Server) logFailed(ctx context.Context, r *http.Request, inModel, target string, stream bool, status int, errMsg string, reqBody []byte, dur time.Duration) {
+	s.logFailedResponse(ctx, r, inModel, target, stream, status, errMsg, reqBody, dur, nil)
+}
+
+// upstreamFailure carries the upstream response that failed a request, so the
+// request log can keep it. Retry-After / x-ratelimit-* are the only place Zen
+// publishes a reset time, and its 429/5xx bodies explain the actual reason;
+// both used to be discarded, leaving only the parsed message (request #30486,
+// 429 on /v1/messages, 2026-10-23, had an empty response in the panel).
+type upstreamFailure struct {
+	Status int
+	Header http.Header
+	Body   []byte
+}
+
+// logFailedResponse is logFailed plus the upstream response that caused it.
+func (s *Server) logFailedResponse(ctx context.Context, r *http.Request, inModel, target string, stream bool, status int, errMsg string, reqBody []byte, dur time.Duration, up *upstreamFailure) {
 	apiKey := APIKeyFromContext(ctx)
 	// A failed request still counts as one request against quota (but we don't
 	// charge tokens for requests that never produced a model response).
@@ -956,6 +977,17 @@ func (s *Server) logFailed(ctx context.Context, r *http.Request, inModel, target
 	}
 	if mb > 0 {
 		reqStr = truncate(reqStr, mb)
+	}
+	respStr, respHeaders := "", ""
+	if up != nil {
+		if up.Status != 0 {
+			status = up.Status
+		}
+		respStr = string(up.Body)
+		if mb > 0 {
+			respStr = truncate(respStr, mb)
+		}
+		respHeaders = encodeLoggedHeaders(up.Header)
 	}
 	var keyID int64
 	if apiKey != nil {
@@ -978,11 +1010,42 @@ func (s *Server) logFailed(ctx context.Context, r *http.Request, inModel, target
 				Error:         truncate(errMsg, 2048),
 				Effort:        effort,
 				ReqBody:       reqStr,
+				RespBody:      respStr,
+				RespHeaders:   respHeaders,
 				APIKeyID:      keyID,
 			})
 		}()
 	}
 }
+
+// encodeLoggedHeaders renders upstream response headers as a stable JSON
+// object. Sorted, one line per header, so the panel can show the reset time
+// without the whole raw HTTP response.
+func encodeLoggedHeaders(h http.Header) string {
+	if len(h) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		kb, _ := json.Marshal(k)
+		vb, _ := json.Marshal(strings.Join(h[k], ", "))
+		b.Write(kb)
+		b.WriteString(":")
+		b.Write(vb)
+	}
+	b.WriteString("}")
+	return truncate(b.String(), maxLoggedHeaderBytes)
+}
+
 
 func (s *Server) shouldLog() bool {
 	s.cfg.RLock()
@@ -1091,6 +1154,10 @@ func extractAnthropicError(b []byte) string {
 const (
 	maxRequestBytes  = 32 << 20 // 32 MiB
 	maxResponseBytes = 32 << 20
+	// maxLoggedHeaderBytes bounds the header block kept for a failed request;
+	// the interesting ones (retry-after, x-ratelimit-*) are tens of bytes, so
+	// this only guards against a pathological upstream sending huge headers.
+	maxLoggedHeaderBytes = 8 << 10
 )
 
 func toolStallError(stop string) string {

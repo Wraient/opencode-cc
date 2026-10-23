@@ -893,7 +893,7 @@ func TestProxyStreamEndToEnd(t *testing.T) {
 		`"text_delta","text":", streamed"`,
 		"event: content_block_stop",
 		`"stop_reason":"end_turn"`,
-		`"input_tokens":8`,
+		`"input_tokens":3`,
 		`"cache_creation_input_tokens":0`,
 		`"cache_read_input_tokens":5`,
 		`"output_tokens":3`,
@@ -914,6 +914,9 @@ func TestProxyStreamEndToEnd(t *testing.T) {
 		if len(rows) > 0 {
 			if rows[0].TargetModel != "glm-4.6" {
 				t.Errorf("logged wrong target model: %s", rows[0].TargetModel)
+			}
+			if rows[0].InputTokens != 8 || rows[0].CachedInputTokens != 5 {
+				t.Errorf("logged usage input=%d cached=%d", rows[0].InputTokens, rows[0].CachedInputTokens)
 			}
 			if rows[0].Stream != true {
 				t.Errorf("stream flag not logged")

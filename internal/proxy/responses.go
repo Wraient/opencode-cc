@@ -885,13 +885,13 @@ func responsesUsage(usage OpenAIUsage) *ResponsesUsage {
 
 func anthropicResponsesUsage(usage AnthropicUsage) *ResponsesUsage {
 	return &ResponsesUsage{
-		InputTokens: usage.InputTokens,
+		InputTokens: usage.TotalInputTokens(),
 		InputTokensDetails: ResponsesInputTokenDetail{
 			CachedTokens: usage.CacheReadInputTokens,
 		},
 		OutputTokens:        usage.OutputTokens,
 		OutputTokensDetails: ResponsesOutputTokenDetail{},
-		TotalTokens:         usage.InputTokens + usage.OutputTokens,
+		TotalTokens:         usage.TotalInputTokens() + usage.OutputTokens,
 	}
 }
 
