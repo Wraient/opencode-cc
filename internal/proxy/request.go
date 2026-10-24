@@ -79,6 +79,11 @@ func ConvertRequest(in *AnthropicRequest, resolveModel func(string) string) *Ope
 		out.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
 	}
 
+	// DeepSeek-style backends reject requests whose thinking-mode history does
+	// not carry reasoning_content on every assistant turn (including turns
+	// where the model produced none). Make the field explicit for that family.
+	ensureReasoningReplayForRequest(out)
+
 	return out
 }
 
@@ -199,6 +204,7 @@ func convertAssistantBlocks(m AnthropicMessage) []OpenAIMessage {
 	var toolCalls []OpenAIToolCall
 	var parts []OpenAIContentPart
 	hasText := false
+	reasoningPresent := false
 	for _, b := range m.Content.Blocks {
 		switch b.Type {
 		case "text":
@@ -218,17 +224,20 @@ func convertAssistantBlocks(m AnthropicMessage) []OpenAIMessage {
 			// require their previous reasoning_content to be replayed on the
 			// assistant message. Claude Code sends that back as an Anthropic
 			// thinking block, so preserve it structurally instead of emitting it
-			// as user-visible text.
+			// as user-visible text. Presence matters even when the text is
+			// empty: a thinking block means the provider returned the field.
+			reasoningPresent = true
 			msg.ReasoningContent += thinkingText(b)
 		default:
 			parts = append(parts, OpenAIContentPart{Type: "text", Text: b.Text})
 			hasText = true
 		}
 	}
-	if msg.ReasoningContent == "" && len(toolCalls) > 0 {
-		msg.ReasoningContent = cachedReasoningForToolCalls(toolCallIDs(toolCalls))
-	} else if msg.ReasoningContent != "" && len(toolCalls) > 0 {
-		cacheReasoningForToolCalls(msg.ReasoningContent, toolCallIDs(toolCalls)...)
+	msg.ReasoningContentSet = reasoningPresent
+	if !msg.ReasoningContentSet && len(toolCalls) > 0 {
+		msg.ReasoningContent, msg.ReasoningContentSet = cachedReasoningStateForToolCalls(toolCallIDs(toolCalls))
+	} else if msg.ReasoningContentSet && len(toolCalls) > 0 {
+		cacheReasoningStateForToolCalls(msg.ReasoningContent, true, toolCallIDs(toolCalls)...)
 	}
 	if len(parts) > 0 {
 		if len(parts) == 1 {

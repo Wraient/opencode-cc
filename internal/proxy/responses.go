@@ -120,6 +120,8 @@ func ConvertResponsesRequest(
 	if out.Stream {
 		out.StreamOptions = &OpenAIStreamOptions{IncludeUsage: true}
 	}
+	// Same DeepSeek reasoning-replay guarantee as the Messages translation.
+	ensureReasoningReplayForRequest(out)
 	return out, nil
 }
 

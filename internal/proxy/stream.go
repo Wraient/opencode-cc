@@ -142,6 +142,7 @@ type StreamConverter struct {
 	allowedNames     []string
 	acceptedToolCall bool
 	reasoning        strings.Builder
+	reasoningPresent bool
 	toolIDs          []string
 
 	// Buffered tool calls keyed by upstream index (see pendingChatTool).
@@ -270,7 +271,13 @@ func (c *StreamConverter) HandleChunk(chunk *OpenAIStreamChunk) error {
 	for _, ch := range chunk.Choices {
 		// 1. reasoning_content is provider-required hidden thinking state.
 		// Emit it as an Anthropic thinking block so Claude Code can replay it
-		// on the next request without mixing it into user-visible text.
+		// on the next request without mixing it into user-visible text. An
+		// explicit empty value still counts as present: DeepSeek may return
+		// reasoning_content:"" on a valid tool-call turn and requires the
+		// field to be replayed.
+		if ch.Delta.ReasoningContentSet || ch.Delta.ReasoningContent != "" {
+			c.reasoningPresent = true
+		}
 		if ch.Delta.ReasoningContent != "" {
 			if err := c.handleThinking(ch.Delta.ReasoningContent); err != nil {
 				return err
@@ -510,7 +517,7 @@ func (c *StreamConverter) Finalize(stopReason string) error {
 			return err
 		}
 	}
-	cacheReasoningForToolCalls(c.reasoning.String(), c.toolIDs...)
+	cacheReasoningStateForToolCalls(c.reasoning.String(), c.reasoningPresent, c.toolIDs...)
 	// Prefer the finish_reason the upstream reported; fall back to the caller's
 	// stopReason (e.g. "stream_error").
 	reason := c.pendingFinish
