@@ -1,0 +1,128 @@
+{
+  "time": "2026-10-26T19:37:11.531761+00:00",
+  "scope": "Friend setup verification on the reference Linux laptop; isolated services and real Zen inference, not a second physical laptop",
+  "model_alias": "deepseek-v4.1-flash-oc",
+  "upstream_model": "deepseek-v4.1-flash-free",
+  "helper_runtime": "Bun 1.4.2",
+  "claude": "2.1.310",
+  "cpa": "v8.0.4 + bundled diff to 2864425",
+  "helper_routes": [
+    "direct"
+  ],
+  "auto_reset": false,
+  "checks": {
+    "relay_go_build_and_tests": "pass",
+    "frontend_npm_ci_and_build": "pass",
+    "helper_bun_tests": {
+      "pass": 6,
+      "assertions": 33
+    },
+    "cpa_patch_apply_to_pinned_base": "pass",
+    "cpa_changed_package_tests": "pass",
+    "cpa_clean_source_build": "pass; TMPDIR and GOTMPDIR on disk required due local /tmp quota",
+    "telegram_sender_offline_tests": 3,
+    "fresh_install_auth": "pass: unauthenticated config/models 401; panel login, key creation, authenticated models 200",
+    "embedded_dashboard": "HTTP 200",
+    "docker_compose_config": "pass; no full container sidecar acceptance",
+    "documentation_links_and_fences": "pass",
+    "credential_audit": "pass: patterns, sensitive JSON fields and comparison against local relay/OAuth/Telegram/CPA secrets; no values recorded"
+  },
+  "cases": [
+    {
+      "challenge": "FRIEND_SETUP_SAVED_2710",
+      "credential": "saved key",
+      "fault_seconds": 0.0,
+      "injected_rejections": 0,
+      "phases": [
+        {
+          "label": "during_outage",
+          "seconds": 10.545,
+          "exit": 0,
+          "proof_file_verified": true,
+          "successful_tools": [
+            "Read",
+            "Write"
+          ]
+        }
+      ]
+    },
+    {
+      "challenge": "FRIEND_SETUP_BRIEF_2710",
+      "credential": "saved key",
+      "fault_seconds": 8.0,
+      "injected_rejections": 3,
+      "phases": [
+        {
+          "label": "during_outage",
+          "seconds": 23.484,
+          "exit": 0,
+          "proof_file_verified": true,
+          "successful_tools": [
+            "Read",
+            "Write"
+          ]
+        }
+      ]
+    },
+    {
+      "challenge": "FRIEND_SETUP_SUSTAINED_2710",
+      "credential": "saved key",
+      "fault_seconds": 195.0,
+      "injected_rejections": 15,
+      "phases": [
+        {
+          "label": "during_outage",
+          "seconds": 212.912,
+          "exit": 0,
+          "proof_file_verified": true,
+          "successful_tools": [
+            "Read",
+            "Write"
+          ]
+        },
+        {
+          "label": "after_recovery_same_cpa_process",
+          "seconds": 8.193,
+          "exit": 0,
+          "proof_file_verified": true,
+          "successful_tools": [
+            "Read",
+            "Write"
+          ]
+        }
+      ]
+    },
+    {
+      "challenge": "FRIEND_SETUP_ACTIVE_2710",
+      "credential": "active OAuth",
+      "fault_seconds": 0.0,
+      "injected_rejections": 0,
+      "phases": [
+        {
+          "label": "during_outage",
+          "seconds": 8.437,
+          "exit": 0,
+          "proof_file_verified": true,
+          "successful_tools": [
+            "Read",
+            "Write"
+          ]
+        }
+      ]
+    }
+  ],
+  "egress": {
+    "direct_https_trace": "pass, warp=off",
+    "phone_https_trace": "pass, warp=off",
+    "warp_https_trace": "timeout after 15 seconds, curl exit 28",
+    "warp_status": "CLI requested Terms of Service acceptance; no acceptance or WARP reconfiguration performed"
+  },
+  "limitations": [
+    "No physical second-laptop install",
+    "No real Telegram send or phone reset; sender tested offline only",
+    "No new tailnet enrollment or Android automation installation",
+    "WARP is optional and did not pass current HTTPS validation",
+    "Genuine provider/account quota and free-client eligibility still apply",
+    "First exploratory invocation returned exit 0 and claimed file success without creating a file; rejected. Runner now uses explicit absolute paths, restricts tools, verifies successful Read/Write results, and removes proof between phases."
+  ]
+}

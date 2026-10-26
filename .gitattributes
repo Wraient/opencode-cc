@@ -1,0 +1,2 @@
+# Patch context intentionally contains leading spaces and tabs.
+contrib/cliproxyapi/patches/*.patch -whitespace

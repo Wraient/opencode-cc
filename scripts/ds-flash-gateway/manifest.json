@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/anomalyco/opencode",
+  "tag": "v2.1.2",
+  "commit": "a517687fde98a7329ada3ae644a01a9fc6c4e99e",
+  "captured_cli": "2.1.2",
+  "model": "deepseek-v4.1-flash-free",
+  "system_sha256": "61a1a01634d6487a867bb8a75a263f087930425a1cc21c332dee7eead30ba31d",
+  "note": "Native system plus generated public OpenCode management-tool catalog, captured in isolated HOME without user plugins. Original client instructions are retained after this prelude."
+}

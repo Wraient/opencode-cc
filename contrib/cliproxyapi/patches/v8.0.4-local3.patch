@@ -1,0 +1,1709 @@
+diff --git a/internal/api/handlers/management/api_tools_test.go b/internal/api/handlers/management/api_tools_test.go
+index 49e5dac..eaf29df 100644
+--- a/internal/api/handlers/management/api_tools_test.go
++++ b/internal/api/handlers/management/api_tools_test.go
+@@ -779,7 +779,7 @@ func TestAPICallReplacesXAIOAuthAccessToken(t *testing.T) {
+ 			"access_token":  "xai-oauth-access-token",
+ 			"refresh_token": "xai-refresh-token",
+ 			"base_url":      "https://api.x.ai/v1",
+-			"expired":       time.Now().Add(time.Hour).Format(time.RFC3339),
++			"expired":       time.Now().Add(4 * time.Hour).Format(time.RFC3339), // beyond local 2h xai refresh lead
+ 		},
+ 	}
+ 	if _, errRegister := manager.Register(context.Background(), xaiAuth); errRegister != nil {
+@@ -948,7 +948,7 @@ func TestAPICallUsesXAITokenStorageWithoutRefresh(t *testing.T) {
+ 			AccessToken:   "xai-valid-storage-token",
+ 			RefreshToken:  "xai-refresh-token",
+ 			TokenEndpoint: tokenServer.URL,
+-			Expire:        time.Now().Add(2 * time.Hour).Format(time.RFC3339),
++			Expire:        time.Now().Add(4 * time.Hour).Format(time.RFC3339), // beyond local 2h xai refresh lead
+ 		},
+ 	}
+ 	if _, errRegister := manager.Register(context.Background(), xaiAuth); errRegister != nil {
+@@ -1176,7 +1176,7 @@ func TestAPICallPrioritizesStorageAccessTokenOverMetadataIDToken(t *testing.T) {
+ 			AccessToken:   "xai-real-access-token",
+ 			RefreshToken:  "xai-refresh-token",
+ 			TokenEndpoint: tokenServer.URL,
+-			Expire:        time.Now().Add(2 * time.Hour).Format(time.RFC3339),
++			Expire:        time.Now().Add(4 * time.Hour).Format(time.RFC3339), // beyond local 2h xai refresh lead
+ 		},
+ 	}
+ 	if _, errRegister := manager.Register(context.Background(), xaiAuth); errRegister != nil {
+@@ -1338,7 +1338,7 @@ func TestAPICallReplacesXAIOAuthAccessTokenInData(t *testing.T) {
+ 			"access_token":  "xai-body-data-token",
+ 			"refresh_token": "xai-refresh-token",
+ 			"base_url":      "https://api.x.ai/v1",
+-			"expired":       time.Now().Add(time.Hour).Format(time.RFC3339),
++			"expired":       time.Now().Add(4 * time.Hour).Format(time.RFC3339), // beyond local 2h xai refresh lead
+ 		},
+ 	}
+ 	if _, errRegister := manager.Register(context.Background(), xaiAuth); errRegister != nil {
+diff --git a/internal/auth/xai/types.go b/internal/auth/xai/types.go
+index dbae19f..06f018e 100644
+--- a/internal/auth/xai/types.go
++++ b/internal/auth/xai/types.go
+@@ -29,7 +29,9 @@ const (
+ 	MaxPollDuration = 30 * time.Minute
+ )
+ 
+-var refreshLead = 5 * time.Minute
++// refreshLead is how far ahead of access-token expiry we start OAuth refresh.
++// 2h gives large free-tier pools room to stagger refreshes instead of a 5m stampede.
++var refreshLead = 2 * time.Hour
+ 
+ // RefreshLead returns the refresh lead time for xAI OAuth credentials.
+ func RefreshLead() time.Duration {
+diff --git a/internal/config/config_types.go b/internal/config/config_types.go
+index 5158d93..b1566a5 100644
+--- a/internal/config/config_types.go
++++ b/internal/config/config_types.go
+@@ -509,6 +509,15 @@ type ClaudeKey struct {
+ 	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
+ 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
+ 
++	// RateLimitHoldSeconds opts this credential into the rate-limit hold (local
++	// patch). A request that fails with 429 because this credential is rate
++	// limited stays connected and is re-probed with exponential backoff for up
++	// to this many seconds before the 429 is returned. Stored 429 cooldowns of
++	// the credential are capped to the backoff schedule so an upstream
++	// Retry-After far in the future cannot block requests without probing.
++	// Nil or a non-positive value keeps the stock behavior.
++	RateLimitHoldSeconds *int `yaml:"rate-limit-hold-seconds,omitempty" json:"rate-limit-hold-seconds,omitempty"`
++
+ 	// RequestScopedErrors configures custom classification rules for upstream errors.
+ 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+ 
+diff --git a/internal/config/config_v8.go b/internal/config/config_v8.go
+index 9404d61..6a46cc4 100644
+--- a/internal/config/config_v8.go
++++ b/internal/config/config_v8.go
+@@ -234,6 +234,7 @@ var sharedKeyFields = map[string]bool{
+ 	"priority": true, "prefix": true, "proxy-url": true, "headers": true,
+ 	"models": true, "excluded-models": true, "disable-cooling": true,
+ 	"request-retry": true, "request-scoped-errors": true,
++	"rate-limit-hold-seconds": true,
+ }
+ 
+ func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
+diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
+index 414b788..b275fb9 100644
+--- a/internal/runtime/executor/claude_executor_request.go
++++ b/internal/runtime/executor/claude_executor_request.go
+@@ -688,6 +688,16 @@ func classifyClaudeUpstreamError(statusCode int, headers http.Header, body []byt
+ }
+ 
+ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) error {
++	// A service outage is not an Anthropic quota window. Preserve its exact
++	// standard retry hint for both scheduling and the downstream response.
++	if statusCode == http.StatusRequestTimeout || (statusCode >= 500 && statusCode < 600) {
++		retryAfter := helps.ParseServiceRetryAfter(headers, time.Now())
++		err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
++		if retryAfter != nil {
++			return statusErrWithHeaders{statusErr: err, headers: http.Header{"Retry-After": []string{headers.Get("Retry-After")}}}
++		}
++		return err
++	}
+ 	var retryAfter *time.Duration
+ 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
+ 		retryAfter = helps.ParseClaudeRateLimitReset(headers, time.Now())
+diff --git a/internal/runtime/executor/claude_executor_service_retry_test.go b/internal/runtime/executor/claude_executor_service_retry_test.go
+new file mode 100644
+index 0000000..3fa01d2
+--- /dev/null
++++ b/internal/runtime/executor/claude_executor_service_retry_test.go
+@@ -0,0 +1,35 @@
++package executor
++
++import (
++	"net/http"
++	"testing"
++	"time"
++)
++
++func TestClaudeServiceRetryAfterHasNoQuotaGrace(t *testing.T) {
++	for _, status := range []int{408, 500, 502, 503, 504, 529} {
++		err := classifyClaudeUpstreamError(status, http.Header{"Retry-After": []string{"2"}, "Set-Cookie": []string{"private-fixture"}}, []byte(`{"error":{"type":"api_error","message":"network unavailable"}}`))
++		retry, ok := err.(interface{ RetryAfter() *time.Duration })
++		if !ok || retry.RetryAfter() == nil || *retry.RetryAfter() != 2*time.Second {
++			t.Fatalf("status %d: service deadline was discarded or quota fuzz added", status)
++		}
++		carrier, ok := err.(interface{ Headers() http.Header })
++		if !ok || carrier.Headers().Get("Retry-After") != "2" || carrier.Headers().Get("Set-Cookie") != "" {
++			t.Fatalf("status %d: retry header lost or unrelated headers exposed", status)
++		}
++		copy := carrier.Headers()
++		copy.Set("Retry-After", "100")
++		if carrier.Headers().Get("Retry-After") != "2" {
++			t.Fatal("error header state was externally mutated")
++		}
++	}
++}
++
++func TestClaudeServiceMissingOrInvalidRetryAfterKeepsDefault(t *testing.T) {
++	for _, raw := range []string{"", "invalid", "-5"} {
++		err := classifyClaudeUpstreamError(503, http.Header{"Retry-After": []string{raw}}, []byte(`service unavailable`))
++		if err.(interface{ RetryAfter() *time.Duration }).RetryAfter() != nil {
++			t.Fatalf("invalid service retry hint accepted: %q", raw)
++		}
++	}
++}
+diff --git a/internal/runtime/executor/helps/service_retry_after.go b/internal/runtime/executor/helps/service_retry_after.go
+new file mode 100644
+index 0000000..e96edf1
+--- /dev/null
++++ b/internal/runtime/executor/helps/service_retry_after.go
+@@ -0,0 +1,34 @@
++package helps
++
++import (
++	"math"
++	"net/http"
++	"strconv"
++	"strings"
++	"time"
++)
++
++// ParseServiceRetryAfter preserves a standard service retry deadline without
++// applying quota-window grace periods. It must not be used for quota errors.
++func ParseServiceRetryAfter(headers http.Header, now time.Time) *time.Duration {
++	raw := strings.TrimSpace(headers.Get("Retry-After"))
++	if raw == "" {
++		return nil
++	}
++	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
++		if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds >= float64(math.MaxInt64)/float64(time.Second) {
++			return nil
++		}
++		delay := time.Duration(seconds * float64(time.Second))
++		return &delay
++	}
++	deadline, err := http.ParseTime(raw)
++	if err != nil {
++		return nil
++	}
++	delay := deadline.Sub(now)
++	if delay < 0 {
++		delay = 0
++	}
++	return &delay
++}
+diff --git a/internal/runtime/executor/helps/service_retry_after_test.go b/internal/runtime/executor/helps/service_retry_after_test.go
+new file mode 100644
+index 0000000..3fae93d
+--- /dev/null
++++ b/internal/runtime/executor/helps/service_retry_after_test.go
+@@ -0,0 +1,25 @@
++package helps
++
++import (
++	"net/http"
++	"testing"
++	"time"
++)
++
++func TestParseServiceRetryAfter(t *testing.T) {
++	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
++	for _, raw := range []string{"2", now.Add(2 * time.Second).Format(http.TimeFormat)} {
++		delay := ParseServiceRetryAfter(http.Header{"Retry-After": []string{raw}}, now)
++		if delay == nil || *delay != 2*time.Second {
++			t.Fatalf("retry hint %q: got %v", raw, delay)
++		}
++	}
++	if ParseServiceRetryAfter(nil, now) != nil {
++		t.Fatal("missing header should not invent a deadline")
++	}
++	for _, raw := range []string{"-1", "Inf", "NaN", "1e100", "invalid"} {
++		if ParseServiceRetryAfter(http.Header{"Retry-After": []string{raw}}, now) != nil {
++			t.Fatalf("invalid retry deadline accepted: %q", raw)
++		}
++	}
++}
+diff --git a/internal/runtime/executor/xai_executor_response.go b/internal/runtime/executor/xai_executor_response.go
+index 11fe695..6148e90 100644
+--- a/internal/runtime/executor/xai_executor_response.go
++++ b/internal/runtime/executor/xai_executor_response.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"encoding/json"
+ 	"fmt"
++	"math/rand/v2"
+ 	"net/http"
+ 	"sort"
+ 	"strings"
+@@ -1087,13 +1088,27 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
+ // cli-chat-proxy ("Usage resets over a rolling 24-hour window").
+ const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
+ 
++// Generic rate-limit 429s (not free-usage-exhausted) cool for 20–40 minutes so
++// disable-cooling pools still skip hot accounts without a 24h blackout.
++const (
++	xaiRateLimitCooldownMin = 20 * time.Minute
++	xaiRateLimitCooldownMax = 40 * time.Minute
++)
++
++func xaiRateLimitCooldown() time.Duration {
++	span := xaiRateLimitCooldownMax - xaiRateLimitCooldownMin
++	if span <= 0 {
++		return xaiRateLimitCooldownMin
++	}
++	return xaiRateLimitCooldownMin + time.Duration(rand.Int64N(int64(span)+1))
++}
++
+ // xaiStatusErr normalizes upstream xAI error bodies for conductor behavior:
+ //   - credential invalidation (403 bad-credentials) is remapped to 401 so the
+ //     existing OAuth refresh-once-and-retry path runs instead of payment cooldown
+ //   - free-tier exhaustion (subscription:free-usage-exhausted) carries a 24h
+ //     RetryAfter hint for auth cooldown / account rotation
+-//
+-// Generic 429s stay without an explicit retry hint so conductor backoff still applies.
++//   - generic 429s carry a 20–40m RetryAfter for short rate-limit cooldowns
+ func xaiStatusErr(code int, body []byte) statusErr {
+ 	err := statusErr{code: code, msg: string(body)}
+ 	if len(body) == 0 {
+@@ -1118,7 +1133,10 @@ func xaiStatusErr(code int, body []byte) statusErr {
+ 		strings.Contains(msg, "included free usage") {
+ 		d := xaiFreeUsageExhaustedCooldown
+ 		err.retryAfter = &d
++		return err
+ 	}
++	d := xaiRateLimitCooldown()
++	err.retryAfter = &d
+ 	return err
+ }
+ 
+diff --git a/internal/runtime/executor/xai_status_err_test.go b/internal/runtime/executor/xai_status_err_test.go
+index 5ca74c9..8e144ca 100644
+--- a/internal/runtime/executor/xai_status_err_test.go
++++ b/internal/runtime/executor/xai_status_err_test.go
+@@ -21,11 +21,15 @@ func TestXAIStatusErr_FreeUsageExhaustedSets24hRetryAfter(t *testing.T) {
+ 	}
+ }
+ 
+-func TestXAIStatusErr_Generic429HasNoRetryAfter(t *testing.T) {
++func TestXAIStatusErr_Generic429HasRateLimitRetryAfter(t *testing.T) {
+ 	body := []byte(`{"code":"rate_limit","error":"too many requests"}`)
+ 	err := xaiStatusErr(http.StatusTooManyRequests, body)
+-	if err.RetryAfter() != nil {
+-		t.Fatalf("expected nil RetryAfter for generic 429, got %v", *err.RetryAfter())
++	if err.RetryAfter() == nil {
++		t.Fatal("expected RetryAfter for generic 429")
++	}
++	got := *err.RetryAfter()
++	if got < xaiRateLimitCooldownMin || got > xaiRateLimitCooldownMax {
++		t.Fatalf("RetryAfter = %v, want between %v and %v", got, xaiRateLimitCooldownMin, xaiRateLimitCooldownMax)
+ 	}
+ }
+ 
+diff --git a/internal/watcher/diff/config_diff.go b/internal/watcher/diff/config_diff.go
+index eff3100..0b24a3d 100644
+--- a/internal/watcher/diff/config_diff.go
++++ b/internal/watcher/diff/config_diff.go
+@@ -303,6 +303,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
+ 				changes = append(changes, fmt.Sprintf("claude[%d].fingerprint-profile: %s -> %s", i, strings.TrimSpace(o.FingerprintProfile), strings.TrimSpace(n.FingerprintProfile)))
+ 			}
+ 			changes = appendOptionalIntChange(changes, fmt.Sprintf("claude[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
++			changes = appendOptionalIntChange(changes, fmt.Sprintf("claude[%d].rate-limit-hold-seconds", i), o.RateLimitHoldSeconds, n.RateLimitHoldSeconds)
+ 			if o.Cloak != nil && n.Cloak != nil {
+ 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {
+ 					changes = append(changes, fmt.Sprintf("claude[%d].cloak.mode: %s -> %s", i, o.Cloak.Mode, n.Cloak.Mode))
+diff --git a/internal/watcher/synthesizer/config.go b/internal/watcher/synthesizer/config.go
+index 4d07e16..7b1c624 100644
+--- a/internal/watcher/synthesizer/config.go
++++ b/internal/watcher/synthesizer/config.go
+@@ -162,6 +162,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
+ 			metadata["disable_cooling"] = *ck.DisableCooling
+ 		}
+ 		addRequestRetryToMetadata(ck.RequestRetry, metadata)
++		addRateLimitHoldToMetadata(ck.RateLimitHoldSeconds, metadata)
+ 		addRequestScopedErrorsToMetadata(ck.RequestScopedErrors, metadata)
+ 		if ck.Priority != 0 {
+ 			attrs["priority"] = strconv.Itoa(ck.Priority)
+diff --git a/internal/watcher/synthesizer/helpers.go b/internal/watcher/synthesizer/helpers.go
+index e986219..32684fa 100644
+--- a/internal/watcher/synthesizer/helpers.go
++++ b/internal/watcher/synthesizer/helpers.go
+@@ -112,6 +112,15 @@ func addRequestRetryToMetadata(requestRetry *int, metadata map[string]any) {
+ 	metadata["request_retry"] = *requestRetry
+ }
+ 
++// addRateLimitHoldToMetadata copies a per-credential rate-limit hold window into metadata.
++// Nil or non-positive values are treated as unset and are not written.
++func addRateLimitHoldToMetadata(holdSeconds *int, metadata map[string]any) {
++	if holdSeconds == nil || *holdSeconds <= 0 || metadata == nil {
++		return
++	}
++	metadata["rate_limit_hold_seconds"] = *holdSeconds
++}
++
+ // addRequestScopedErrorsToMetadata copies per-credential request-scoped error rules into metadata.
+ func addRequestScopedErrorsToMetadata(rules []config.RequestScopedErrorRule, metadata map[string]any) {
+ 	if len(rules) == 0 || metadata == nil {
+diff --git a/internal/watcher/synthesizer/rate_limit_hold_test.go b/internal/watcher/synthesizer/rate_limit_hold_test.go
+new file mode 100644
+index 0000000..9006be5
+--- /dev/null
++++ b/internal/watcher/synthesizer/rate_limit_hold_test.go
+@@ -0,0 +1,54 @@
++package synthesizer
++
++import (
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++// The live opencode-cc route is a v8 api-keys.claude group; the hold window is
++// set at group level next to prefix/models and must reach the synthesized auth.
++func TestConfigSynthesizerClaudeRateLimitHoldFromV8Group(t *testing.T) {
++	cfg, errParse := config.ParseConfigBytes([]byte(`
++config-version: 8
++api-keys:
++  claude:
++    - name: claude-2
++      base-url: http://localhost:8787
++      prefix: oc
++      rate-limit-hold-seconds: 180
++      keys:
++        - api-key: fixture
++          models:
++            - name: deepseek-v4.1-flash-free
++              alias: deepseek-v4.1-flash-oc
++    - name: claude-3
++      base-url: http://localhost:8789
++      keys:
++        - api-key: fixture-2
++`))
++	if errParse != nil {
++		t.Fatalf("parse v8 config: %v", errParse)
++	}
++	if len(cfg.ClaudeKey) != 2 || cfg.ClaudeKey[0].RateLimitHoldSeconds == nil || *cfg.ClaudeKey[0].RateLimitHoldSeconds != 180 {
++		t.Fatalf("claude[0].rate-limit-hold-seconds not parsed: %+v", cfg.ClaudeKey)
++	}
++	if cfg.ClaudeKey[1].RateLimitHoldSeconds != nil {
++		t.Fatal("claude[1] must keep the stock policy")
++	}
++	auths, errSynthesize := NewConfigSynthesizer().Synthesize(&SynthesisContext{
++		Config:      cfg,
++		Now:         time.Unix(100, 0).UTC(),
++		IDGenerator: NewStableIDGenerator(),
++	})
++	if errSynthesize != nil || len(auths) != 2 {
++		t.Fatalf("synthesize: auths=%d err=%v", len(auths), errSynthesize)
++	}
++	if hold, ok := auths[0].RateLimitHoldOverride(); !ok || hold != 180*time.Second {
++		t.Fatalf("hold credential override = %s/%t, want 180s", hold, ok)
++	}
++	if _, ok := auths[1].RateLimitHoldOverride(); ok {
++		t.Fatal("stock credential must not get a hold override")
++	}
++}
+diff --git a/sdk/auth/refresh_registry_test.go b/sdk/auth/refresh_registry_test.go
+index 428ce01..4a37d3a 100644
+--- a/sdk/auth/refresh_registry_test.go
++++ b/sdk/auth/refresh_registry_test.go
+@@ -18,7 +18,7 @@ func TestProviderRefreshLeads(t *testing.T) {
+ 		{name: "kimi", authenticator: NewKimiAuthenticator(), want: 5 * time.Minute},
+ 		{name: "kimi-ai", authenticator: NewKimiAIAuthenticator(), want: 5 * time.Minute},
+ 		{name: "kimi.ai", authenticator: NewKimiAIDotAuthenticator(), want: 5 * time.Minute},
+-		{name: "xai", authenticator: NewXAIAuthenticator(), want: 5 * time.Minute},
++		{name: "xai", authenticator: NewXAIAuthenticator(), want: 2 * time.Hour}, // local: 2h stagger window for large free pools
+ 		{name: "devin", authenticator: NewDevinAuthenticator(), wantNil: true},
+ 		{name: "meta", authenticator: NewMetaAuthenticator(), wantNil: true},
+ 	}
+diff --git a/sdk/cliproxy/auth/auto_refresh_loop.go b/sdk/cliproxy/auth/auto_refresh_loop.go
+index 8921181..0d7fa33 100644
+--- a/sdk/cliproxy/auth/auto_refresh_loop.go
++++ b/sdk/cliproxy/auth/auto_refresh_loop.go
+@@ -416,14 +416,16 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
+ 		return time.Time{}, false
+ 	}
+ 	if hasExpiry && !expiry.IsZero() {
+-		dueAt := expiry.Add(-*lead)
++		// Spread refreshes across the lead window (hash of auth id) so large
++		// pools (~700+ xAI free accounts) do not all hit the token endpoint at once.
++		dueAt := expiry.Add(-*lead).Add(refreshStaggerOffset(auth, *lead))
+ 		if !dueAt.After(now) {
+ 			return now, true
+ 		}
+ 		return dueAt, true
+ 	}
+ 	if !lastRefresh.IsZero() {
+-		dueAt := lastRefresh.Add(*lead)
++		dueAt := lastRefresh.Add(*lead).Add(refreshStaggerOffset(auth, *lead))
+ 		if !dueAt.After(now) {
+ 			return now, true
+ 		}
+diff --git a/sdk/cliproxy/auth/auto_refresh_loop_test.go b/sdk/cliproxy/auth/auto_refresh_loop_test.go
+index faf2087..b9b0a8e 100644
+--- a/sdk/cliproxy/auth/auto_refresh_loop_test.go
++++ b/sdk/cliproxy/auth/auto_refresh_loop_test.go
+@@ -56,7 +56,7 @@ func TestNextRefreshCheckAt_DisabledWithInvalidGrantUnschedule(t *testing.T) {
+ 	if !ok {
+ 		t.Fatalf("nextRefreshCheckAt() ok = false, want true for normal disabled auth")
+ 	}
+-	want := expiry.Add(-lead)
++	want := expiry.Add(-lead).Add(refreshStaggerOffset(normalDisabledAuth, lead))
+ 	if !got.Equal(want) {
+ 		t.Fatalf("nextRefreshCheckAt() = %s, want %s", got, want)
+ 	}
+@@ -152,7 +152,7 @@ func TestNextRefreshCheckAt_ProviderLead_Expiry(t *testing.T) {
+ 	if !ok {
+ 		t.Fatalf("nextRefreshCheckAt() ok = false, want true")
+ 	}
+-	want := expiry.Add(-lead)
++	want := expiry.Add(-lead).Add(refreshStaggerOffset(auth, lead))
+ 	if !got.Equal(want) {
+ 		t.Fatalf("nextRefreshCheckAt() = %s, want %s", got, want)
+ 	}
+@@ -180,7 +180,7 @@ func TestNextRefreshCheckAt_RelativeExpiry(t *testing.T) {
+ 	}
+ 
+ 	got, ok := nextRefreshCheckAt(now, auth, 15*time.Minute)
+-	want := issuedAt.Add(time.Hour - lead)
++	want := issuedAt.Add(time.Hour - lead).Add(refreshStaggerOffset(auth, lead))
+ 	if !ok || !got.Equal(want) {
+ 		t.Fatalf("nextRefreshCheckAt() = (%s, %t), want (%s, true)", got, ok, want)
+ 	}
+diff --git a/sdk/cliproxy/auth/claude_ratelimit_cooldown_test.go b/sdk/cliproxy/auth/claude_ratelimit_cooldown_test.go
+index 9cd6bc5..3286376 100644
+--- a/sdk/cliproxy/auth/claude_ratelimit_cooldown_test.go
++++ b/sdk/cliproxy/auth/claude_ratelimit_cooldown_test.go
+@@ -181,13 +181,18 @@ func TestAuthManager_DisableCoolingDoesNotPermanentlyBlock(t *testing.T) {
+ 		Error:           &Error{HTTPStatus: http.StatusTooManyRequests, Message: "7d limit rejected"},
+ 	})
+ 
+-	// Must NOT be blocked when cooling is disabled
+-	for _, m := range []string{"claude-3-5-sonnet-20241022", "claude-3-opus-20240229"} {
+-		updatedAuth, _ := manager.GetByID(auth.ID)
+-		blocked, _, _ := isAuthBlockedForModel(updatedAuth, m, time.Now())
+-		if blocked {
+-			t.Fatalf("model %q was blocked even though cooling is disabled", m)
+-		}
++	// Refresh patch: the explicit RetryAfter IS honored even with cooling
++	// disabled, so the rate-limited model is parked for the window (siblings
++	// stay free: credential-scope propagation remains disabled), then unblocks.
++	updatedAuth, _ := manager.GetByID(auth.ID)
++	if blocked, _, _ := isAuthBlockedForModel(updatedAuth, "claude-3-5-sonnet-20241022", time.Now()); !blocked {
++		t.Fatal("model claude-3-5-sonnet-20241022 should be parked for the explicit RetryAfter even with cooling disabled")
++	}
++	if blocked, _, _ := isAuthBlockedForModel(updatedAuth, "claude-3-opus-20240229", time.Now()); blocked {
++		t.Fatal("sibling model claude-3-opus-20240229 must stay unblocked when cooling is disabled")
++	}
++	if blocked, _, _ := isAuthBlockedForModel(updatedAuth, "claude-3-5-sonnet-20241022", time.Now().Add(7*24*time.Hour+time.Second)); blocked {
++		t.Fatal("model claude-3-5-sonnet-20241022 still blocked after the RetryAfter window elapsed")
+ 	}
+ }
+ 
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+index 2770295..11bda0d 100644
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -370,6 +370,20 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
+ 	if quota.Exceeded && quota.NextRecoverAt.IsZero() {
+ 		quota.NextRecoverAt = record.NextRetryAfter
+ 	}
++	// Rate-limit hold credentials never keep a 429 cooldown past the hold cap,
++	// including deadlines persisted before the credential opted in.
++	if quota.Exceeded && isRateLimitQuotaReason(quota.Reason) && authRateLimitHoldEnabled(auth) {
++		limit := rateLimitHoldCapLimit(updatedAt, now)
++		if !limit.After(now) {
++			return false
++		}
++		if record.NextRetryAfter.After(limit) {
++			record.NextRetryAfter = limit
++		}
++		if quota.NextRecoverAt.After(limit) {
++			quota.NextRecoverAt = limit
++		}
++	}
+ 
+ 	if model == "" {
+ 		auth.Unavailable = true
+@@ -823,6 +837,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 					}
+ 
+ 					statusCode := statusCodeFromResult(result.Error)
++					rateLimitHoldCapped := false
+ 					if isModelSupportResultError(result.Error) {
+ 						if disableCooling {
+ 							state.NextRetryAfter = time.Time{}
+@@ -870,6 +885,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 								state.NextRetryAfter = next
+ 							}
+ 						case 429:
++							if authRateLimitHoldEnabled(auth) {
++								// Rate-limit hold: short exponential cooldown instead of a
++								// long upstream reset hint; requests re-probe on this schedule.
++								next, level := rateLimitHoldCooldownAfterFailure(state.Quota, result.RetryAfter, now)
++								state.NextRetryAfter = next
++								applyCooldownFields(&state.Quota, QuotaState{
++									Exceeded:      true,
++									Reason:        "quota",
++									NextRecoverAt: next,
++									BackoffLevel:  level,
++								})
++								rateLimitHoldCapped = true
++								break
++							}
+ 							var next time.Time
+ 							var credentialNext time.Time
+ 							backoffLevel := state.Quota.BackoffLevel
+@@ -879,25 +908,28 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 									backoffLevel = auth.Quota.BackoffLevel
+ 								}
+ 							}
+-							if !disableCooling {
+-								if result.RetryAfter != nil {
+-									cooldown := *result.RetryAfter
+-									if cooldown < minQuotaCooldownFloor {
+-										cooldown = minQuotaCooldownFloor
+-									}
+-									next = now.Add(cooldown).Round(0)
+-								} else {
+-									quotaForFailure := state.Quota
+-									if result.CredentialScope {
+-										if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+-											quotaForFailure = auth.Quota
+-										} else {
+-											quotaForFailure.NextRecoverAt = time.Time{}
+-											quotaForFailure.BackoffLevel = 0
+-										}
++							// Always honor explicit RetryAfter (free-usage 24h / rate-limit
++							// 20-40m from xaiStatusErr) even when disable-cooling is true,
++							// so exhausted accounts are skipped instead of hammered.
++							if result.RetryAfter != nil {
++								cooldown := *result.RetryAfter
++								if cooldown < minQuotaCooldownFloor {
++									cooldown = minQuotaCooldownFloor
++								}
++								next = now.Add(cooldown).Round(0)
++							} else if !disableCooling {
++								quotaForFailure := state.Quota
++								if result.CredentialScope {
++									if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
++										quotaForFailure = auth.Quota
++									} else {
++										quotaForFailure.NextRecoverAt = time.Time{}
++										quotaForFailure.BackoffLevel = 0
+ 									}
+-									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now)
+ 								}
++								next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now)
++							}
++							if !next.IsZero() {
+ 								credentialNext = next
+ 								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
+ 									next = state.Quota.NextRecoverAt
+@@ -969,6 +1001,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 					if !state.NextRetryAfter.IsZero() && prevModelRetryAfter.After(state.NextRetryAfter) && prevModelRetryAfter.After(now) {
+ 						state.NextRetryAfter = prevModelRetryAfter
+ 					}
++					// The hold schedule must win over a longer deadline kept from before.
++					if rateLimitHoldCapped && state.NextRetryAfter.After(state.Quota.NextRecoverAt) {
++						state.NextRetryAfter = state.Quota.NextRecoverAt
++					}
+ 					auth.Status = StatusError
+ 					updateAggregatedAvailability(auth, now)
+ 				}
+@@ -978,6 +1014,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 					disableCooling = false
+ 				}
+ 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
++				if statusCodeFromResult(result.Error) == 429 && authRateLimitHoldEnabled(auth) {
++					capRateLimitHoldAuthLevel(auth, now)
++				}
+ 			}
+ 		}
+ 
+@@ -2271,19 +2310,19 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
+ 			auth.Quota.Exceeded = true
+ 			auth.Quota.Reason = "quota"
+ 			var next time.Time
+-			if !disableCooling {
+-				if retryAfter != nil {
+-					cooldown := *retryAfter
+-					if cooldown < minQuotaCooldownFloor {
+-						cooldown = minQuotaCooldownFloor
+-					}
+-					next = now.Add(cooldown).Round(0)
+-				} else {
+-					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
+-				}
+-				if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
+-					next = auth.Quota.NextRecoverAt
++			// Always honor explicit RetryAfter even with disable-cooling so free-usage
++			// 24h and rate-limit 20-40m cooldowns still skip the account.
++			if retryAfter != nil {
++				cooldown := *retryAfter
++				if cooldown < minQuotaCooldownFloor {
++					cooldown = minQuotaCooldownFloor
+ 				}
++				next = now.Add(cooldown).Round(0)
++			} else if !disableCooling {
++				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
++			}
++			if !next.IsZero() && auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
++				next = auth.Quota.NextRecoverAt
+ 			}
+ 			auth.Quota.NextRecoverAt = next
+ 			auth.NextRetryAfter = next
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+index d84071d..df1c2f2 100644
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -130,6 +130,21 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
+ 		return resp, unwrapExecutionBoundaryError(errHome)
+ 	}
+ 
++	var resp cliproxyexecutor.Response
++	errExec := m.runWithRateLimitHold(ctx, opts, normalized, authSelectionModelFromOptions(opts, req.Model), func() error {
++		var errRounds error
++		resp, errRounds = m.executeRetryRounds(ctx, normalized, req, opts)
++		return errRounds
++	})
++	if errExec != nil {
++		return cliproxyexecutor.Response{}, errExec
++	}
++	return resp, nil
++}
++
++// executeRetryRounds runs the credential retry rounds of one non-streaming
++// execution attempt.
++func (m *Manager) executeRetryRounds(ctx context.Context, normalized []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+ 
+ 	var lastErr error
+@@ -190,6 +205,21 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
+ 		return resp, unwrapExecutionBoundaryError(errHome)
+ 	}
+ 
++	var resp cliproxyexecutor.Response
++	errExec := m.runWithRateLimitHold(ctx, opts, normalized, authSelectionModelFromOptions(opts, req.Model), func() error {
++		var errRounds error
++		resp, errRounds = m.executeCountRetryRounds(ctx, normalized, req, opts)
++		return errRounds
++	})
++	if errExec != nil {
++		return cliproxyexecutor.Response{}, errExec
++	}
++	return resp, nil
++}
++
++// executeCountRetryRounds runs the credential retry rounds of one token-count
++// execution attempt.
++func (m *Manager) executeCountRetryRounds(ctx context.Context, normalized []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+ 
+ 	var lastErr error
+@@ -244,6 +274,37 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
+ 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+ 	}
+ 
++	var result *cliproxyexecutor.StreamResult
++	errStream := m.runWithRateLimitHold(ctx, opts, normalized, authSelectionModelFromOptions(opts, req.Model), func() error {
++		var errRounds error
++		result, errRounds = m.executeStreamRetryRounds(ctx, normalized, req, opts)
++		return errRounds
++	})
++	if errStream != nil {
++		var pending *pendingStreamBootstrapError
++		if errors.As(errStream, &pending) && pending != nil {
++			return streamErrorResult(pending.bootstrap.Headers(), pending.err), nil
++		}
++		return nil, errStream
++	}
++	return result, nil
++}
++
++// pendingStreamBootstrapError carries the final bootstrap failure of a stream
++// attempt out of its retry rounds, so the rate-limit hold can inspect it
++// before it becomes an error stream (the stock shape of that final error).
++type pendingStreamBootstrapError struct {
++	err       error
++	bootstrap *streamBootstrapError
++}
++
++func (e *pendingStreamBootstrapError) Error() string { return e.err.Error() }
++
++func (e *pendingStreamBootstrapError) Unwrap() error { return e.err }
++
++// executeStreamRetryRounds runs the credential retry rounds of one streaming
++// execution attempt.
++func (m *Manager) executeStreamRetryRounds(ctx context.Context, normalized []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+ 
+ 	var lastErr error
+@@ -311,7 +372,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
+ 		}
+ 		var bootstrapErr *streamBootstrapError
+ 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
+-			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
++			return nil, &pendingStreamBootstrapError{err: lastErr, bootstrap: bootstrapErr}
+ 		}
+ 		return nil, lastErr
+ 	}
+diff --git a/sdk/cliproxy/auth/conductor_overrides_test.go b/sdk/cliproxy/auth/conductor_overrides_test.go
+index 2149cb7..ab24ec1 100644
+--- a/sdk/cliproxy/auth/conductor_overrides_test.go
++++ b/sdk/cliproxy/auth/conductor_overrides_test.go
+@@ -1359,13 +1359,17 @@ func TestManager_Execute_DisableCooling_DoesNotBlackoutAfter429RetryAfter(t *tes
+ 	if errExecute2 == nil {
+ 		t.Fatal("expected second execute error")
+ 	}
+-	if statusCodeFromError(errExecute2) != http.StatusTooManyRequests {
+-		t.Fatalf("second execute status = %d, want %d", statusCodeFromError(errExecute2), http.StatusTooManyRequests)
++	// The explicit RetryAfter is honored even with disable_cooling=true (refresh
++	// patch): the model is parked for the retry window, so the executor is not
++	// called again and the failure surfaces as a model_cooldown error.
++	var cooldownErr *modelCooldownError
++	if !errors.As(errExecute2, &cooldownErr) {
++		t.Fatalf("second execute error = %v, want modelCooldownError", errExecute2)
+ 	}
+ 
+ 	calls := executor.ExecuteCalls()
+-	if len(calls) != 2 {
+-		t.Fatalf("execute calls = %d, want 2", len(calls))
++	if len(calls) != 1 {
++		t.Fatalf("execute calls = %d, want 1 (second execute blocked by cooldown)", len(calls))
+ 	}
+ 
+ 	updated, ok := m.GetByID(auth.ID)
+@@ -1376,8 +1380,8 @@ func TestManager_Execute_DisableCooling_DoesNotBlackoutAfter429RetryAfter(t *tes
+ 	if state == nil {
+ 		t.Fatalf("expected model state to be present")
+ 	}
+-	if !state.NextRetryAfter.IsZero() {
+-		t.Fatalf("expected NextRetryAfter to be zero when disable_cooling=true, got %v", state.NextRetryAfter)
++	if state.NextRetryAfter.IsZero() {
++		t.Fatalf("expected NextRetryAfter to be set (explicit RetryAfter honored under disable_cooling), got zero")
+ 	}
+ }
+ 
+@@ -1427,8 +1431,11 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T)
+ 	}
+ 
+ 	calls := executor.ExecuteCalls()
+-	if len(calls) != 4 {
+-		t.Fatalf("execute calls = %d, want 4 (initial + 3 retries)", len(calls))
++	// Refresh patch: the explicit RetryAfter is honored even with
++	// disable_cooling=true (clamped to the 10s quota floor), so the model is
++	// parked and the scheduled retries never reach the executor.
++	if len(calls) != 1 {
++		t.Fatalf("execute calls = %d, want 1 (retries blocked by cooldown)", len(calls))
+ 	}
+ }
+ 
+diff --git a/sdk/cliproxy/auth/conductor_rate_limit_hold.go b/sdk/cliproxy/auth/conductor_rate_limit_hold.go
+new file mode 100644
+index 0000000..1b2d54e
+--- /dev/null
++++ b/sdk/cliproxy/auth/conductor_rate_limit_hold.go
+@@ -0,0 +1,332 @@
++package auth
++
++import (
++	"context"
++	"math/rand/v2"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// Rate-limit hold (local patch).
++//
++// Stock behavior turns one upstream 429 into an immediate client error and
++// stores a cooldown as long as the upstream reset hint. OpenCode Zen sends its
++// free-tier window reset (up to ~23h) as Retry-After even on 429s that clear
++// much sooner, so a single 429 parked a single-credential route for most of a
++// day: every later request failed locally without reaching the upstream.
++//
++// Credentials that opt in with rate-limit-hold-seconds instead:
++//   - store 429 cooldowns on a short exponential schedule (2s, 4s, 8s, 15s)
++//     that resets on success; a longer upstream hint is never stored;
++//   - keep a request that ends in 429 connected and re-run its selection and
++//     execution with exponential backoff until the hold window expires, and
++//     only then return the last 429.
++//
++// The hold is model-scoped for opted-in credentials (credential-wide 429
++// propagation is not applied to them). Credentials without the option keep
++// stock behavior, including the long cooldowns other pools rely on.
++
++const rateLimitHoldMaxLevel = 16
++
++// Variables (not constants) only so tests can run the schedule quickly.
++var (
++	rateLimitHoldBackoffBase = 2 * time.Second
++	rateLimitHoldBackoffMax  = 15 * time.Second
++	rateLimitHoldMinCooldown = time.Second
++)
++
++// rateLimitHoldBackoff returns the wait for the given number of consecutive
++// rate-limited probes: 2s, 4s, 8s, then 15s.
++func rateLimitHoldBackoff(level int) time.Duration {
++	wait := rateLimitHoldBackoffBase
++	for i := 0; i < level && wait < rateLimitHoldBackoffMax; i++ {
++		wait *= 2
++	}
++	if wait > rateLimitHoldBackoffMax {
++		wait = rateLimitHoldBackoffMax
++	}
++	return wait
++}
++
++func authRateLimitHoldEnabled(auth *Auth) bool {
++	hold, ok := auth.RateLimitHoldOverride()
++	return ok && hold > 0
++}
++
++func isRateLimitQuotaReason(reason string) bool {
++	switch strings.TrimSpace(reason) {
++	case "quota", "credential_quota":
++		return true
++	default:
++		return false
++	}
++}
++
++// rateLimitHoldCooldownAfterFailure returns the 429 cooldown deadline and the
++// next backoff level for an opted-in credential. A window that a concurrent
++// failure already armed is reused without escalating, unless it outlasts the
++// cap (stale state from an older policy). A shorter upstream hint wins over
++// the schedule; a longer one is ignored.
++func rateLimitHoldCooldownAfterFailure(quota QuotaState, retryAfter *time.Duration, now time.Time) (time.Time, int) {
++	level := quota.BackoffLevel
++	if level < 0 {
++		level = 0
++	}
++	if quota.Exceeded && quota.NextRecoverAt.After(now) && !quota.NextRecoverAt.After(now.Add(rateLimitHoldBackoffMax)) {
++		return quota.NextRecoverAt, level
++	}
++	cooldown := rateLimitHoldBackoff(level)
++	if retryAfter != nil && *retryAfter > 0 && *retryAfter < cooldown {
++		cooldown = *retryAfter
++	}
++	if cooldown < rateLimitHoldMinCooldown {
++		cooldown = rateLimitHoldMinCooldown
++	}
++	if level < rateLimitHoldMaxLevel {
++		level++
++	}
++	return now.Add(cooldown).Round(0), level
++}
++
++// rateLimitHoldCapLimit is the latest deadline a 429 cooldown recorded at
++// recordedAt may keep for an opted-in credential.
++func rateLimitHoldCapLimit(recordedAt, now time.Time) time.Time {
++	if recordedAt.IsZero() || recordedAt.After(now) {
++		recordedAt = now
++	}
++	return recordedAt.Add(rateLimitHoldBackoffMax)
++}
++
++// capRateLimitHoldModelState trims a stored 429 cooldown to the hold cap,
++// anchored at the time the failure was recorded.
++func capRateLimitHoldModelState(state *ModelState, now time.Time) bool {
++	if state == nil || !state.Quota.Exceeded || !isRateLimitQuotaReason(state.Quota.Reason) {
++		return false
++	}
++	limit := rateLimitHoldCapLimit(state.UpdatedAt, now)
++	changed := false
++	if state.NextRetryAfter.After(limit) {
++		state.NextRetryAfter = limit
++		changed = true
++	}
++	if state.Quota.NextRecoverAt.After(limit) {
++		state.Quota.NextRecoverAt = limit
++		changed = true
++	}
++	return changed
++}
++
++// capRateLimitHoldAuthLevel trims an auth-level 429 cooldown to the hold cap.
++// The auth's UpdatedAt moves with every result, so the cap is anchored at now.
++func capRateLimitHoldAuthLevel(auth *Auth, now time.Time) bool {
++	if auth == nil || !auth.Quota.Exceeded || !isRateLimitQuotaReason(auth.Quota.Reason) {
++		return false
++	}
++	limit := now.Add(rateLimitHoldBackoffMax)
++	changed := false
++	if auth.NextRetryAfter.After(limit) {
++		auth.NextRetryAfter = limit
++		changed = true
++	}
++	if auth.Quota.NextRecoverAt.After(limit) {
++		auth.Quota.NextRecoverAt = limit
++		changed = true
++	}
++	return changed
++}
++
++// capRateLimitHoldCooldownsLocked trims every stored 429 cooldown of an
++// opted-in credential. Caller must hold m.mu.
++func capRateLimitHoldCooldownsLocked(auth *Auth, now time.Time) bool {
++	if auth == nil || !authRateLimitHoldEnabled(auth) {
++		return false
++	}
++	changed := capRateLimitHoldAuthLevel(auth, now)
++	for _, state := range auth.ModelStates {
++		if capRateLimitHoldModelState(state, now) {
++			changed = true
++		}
++	}
++	if changed {
++		updateAggregatedAvailability(auth, now)
++		auth.Generation++
++	}
++	return changed
++}
++
++// rateLimitHoldBlockedOnlyByRateLimit reports whether every live block on
++// auth for model is a 429 cooldown the hold may wait out.
++func rateLimitHoldBlockedOnlyByRateLimit(auth *Auth, model string, now time.Time) bool {
++	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
++		return true
++	}
++	modelKey := canonicalModelKey(model)
++	matched := false
++	for stateModel, state := range auth.ModelStates {
++		if state == nil || canonicalModelKey(stateModel) != modelKey {
++			continue
++		}
++		matched = true
++		blocked, _, _ := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
++		if blocked && !(state.Quota.Exceeded && isRateLimitQuotaReason(state.Quota.Reason)) {
++			return false
++		}
++	}
++	if matched {
++		return true
++	}
++	return auth.Quota.Exceeded && isRateLimitQuotaReason(auth.Quota.Reason)
++}
++
++// rateLimitHoldPlan reports whether a request for model may be held after a
++// 429. At least one opted-in candidate must be available or blocked only by a
++// 429 cooldown. It returns the longest hold window among those candidates and
++// the earliest time one of them can be probed again. Stale 429 deadlines past
++// the cap are trimmed first, so state restored or reloaded under an older
++// policy cannot outlast the hold.
++func (m *Manager) rateLimitHoldPlan(ctx context.Context, opts cliproxyexecutor.Options, providers []string, model string, now time.Time) (time.Duration, time.Time, bool) {
++	if m == nil || len(providers) == 0 || m.HomeEnabled() {
++		return 0, time.Time{}, false
++	}
++	providerSet := make(map[string]struct{}, len(providers))
++	for i := range providers {
++		if key := strings.TrimSpace(strings.ToLower(providers[i])); key != "" {
++			providerSet[key] = struct{}{}
++		}
++	}
++	eligibility := authSelectionEligibilityForRequest(ctx, opts)
++	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
++	registryRef := registry.GetGlobalRegistry()
++
++	var (
++		window  time.Duration
++		readyAt time.Time
++		found   bool
++		trimmed []*Auth
++	)
++	m.mu.Lock()
++	for _, auth := range m.auths {
++		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++			continue
++		}
++		hold, ok := auth.RateLimitHoldOverride()
++		if !ok || hold <= 0 {
++			continue
++		}
++		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
++			continue
++		}
++		if !eligibility.allows(auth) {
++			continue
++		}
++		if _, ok := providerSet[executorKeyFromAuth(auth)]; !ok {
++			continue
++		}
++		if model != "" && !m.authSupportsRouteModel(registryRef, auth, model) {
++			continue
++		}
++		if capRateLimitHoldCooldownsLocked(auth, now) {
++			trimmed = append(trimmed, auth.Clone())
++		}
++		checkModel := model
++		if strings.TrimSpace(model) != "" {
++			checkModel = m.selectionModelForAuth(auth, model)
++		}
++		candidateReady := now
++		if blocked, reason, next := isAuthBlockedForModel(auth, checkModel, now); blocked {
++			if reason != blockReasonCooldown || next.IsZero() || !rateLimitHoldBlockedOnlyByRateLimit(auth, checkModel, now) {
++				continue
++			}
++			candidateReady = next
++		}
++		if !found || candidateReady.Before(readyAt) {
++			readyAt = candidateReady
++		}
++		if hold > window {
++			window = hold
++		}
++		found = true
++	}
++	m.mu.Unlock()
++	if m.scheduler != nil {
++		for _, snapshot := range trimmed {
++			m.scheduler.upsertAuth(snapshot)
++		}
++	}
++	return window, readyAt, found
++}
++
++// isRateLimitHoldError reports whether err is a 429 the hold may wait out.
++// Request-scoped refusals (for example Claude fast-mode credits) and request
++// stops are returned to the client unchanged.
++func isRateLimitHoldError(err error) bool {
++	if err == nil || statusCodeFromError(err) != http.StatusTooManyRequests {
++		return false
++	}
++	return !isRequestInvalidError(err) && !isRequestStopError(err) && !isRequestScopedError(err) && !isRequestTerminatedError(err)
++}
++
++func rateLimitHoldJitter(wait time.Duration) time.Duration {
++	spread := wait / 10
++	if spread <= 0 {
++		return wait
++	}
++	return wait + rand.N(spread)
++}
++
++// runWithRateLimitHold runs attempt and re-runs it while it fails with a 429
++// that an opted-in credential may still recover from inside its hold window.
++// Waits grow exponentially (2s .. 15s), never end before the earliest probe
++// time of a cooling candidate, and stop at the window end, where the last
++// attempt's error is returned unchanged. Client cancellation ends the hold.
++func (m *Manager) runWithRateLimitHold(ctx context.Context, opts cliproxyexecutor.Options, providers []string, model string, attempt func() error) error {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	var holdStart time.Time
++	for step := 0; ; step++ {
++		err := attempt()
++		if err == nil {
++			if !holdStart.IsZero() {
++				logEntryWithRequestID(ctx).Infof("rate-limit hold recovered: model=%s held=%s attempts=%d", model, time.Since(holdStart).Round(time.Millisecond), step+1)
++			}
++			return nil
++		}
++		if !isRateLimitHoldError(err) || ctx.Err() != nil {
++			return err
++		}
++		now := time.Now()
++		window, readyAt, ok := m.rateLimitHoldPlan(ctx, opts, providers, model, now)
++		if !ok {
++			return err
++		}
++		if holdStart.IsZero() {
++			holdStart = now
++		}
++		remaining := holdStart.Add(window).Sub(now)
++		if remaining <= 0 {
++			logEntryWithRequestID(ctx).Warnf("rate-limit hold exhausted: model=%s held=%s attempts=%d", model, now.Sub(holdStart).Round(time.Millisecond), step+1)
++			return err
++		}
++		wait := rateLimitHoldBackoff(step)
++		if untilReady := readyAt.Sub(now); untilReady > wait {
++			wait = untilReady
++		}
++		wait = rateLimitHoldJitter(wait)
++		if wait > remaining {
++			wait = remaining
++		}
++		logEntryWithRequestID(ctx).Infof("rate-limit hold: model=%s attempt=%d wait=%s remaining=%s", model, step+1, wait.Round(time.Millisecond), remaining.Round(time.Second))
++		timer := time.NewTimer(wait)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return ctx.Err()
++		case <-timer.C:
++		}
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_rate_limit_hold_test.go b/sdk/cliproxy/auth/conductor_rate_limit_hold_test.go
+new file mode 100644
+index 0000000..5d107d9
+--- /dev/null
++++ b/sdk/cliproxy/auth/conductor_rate_limit_hold_test.go
+@@ -0,0 +1,396 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// zenDailyRetryAfter is the Retry-After OpenCode Zen sent with a 429 on
++// 2026-10-22 (remaining free-tier day) although the limit cleared sooner.
++const zenDailyRetryAfter = 81927 * time.Second
++
++type holdRateLimitError struct {
++	retryAfter time.Duration
++}
++
++func (e holdRateLimitError) Error() string {
++	return `{"error":{"message":"Rate limit exceeded. Please try again later.","type":"rate_limit_error"},"type":"error"}`
++}
++
++func (holdRateLimitError) StatusCode() int { return http.StatusTooManyRequests }
++
++func (e holdRateLimitError) RetryAfter() *time.Duration {
++	value := e.retryAfter
++	return &value
++}
++
++type holdRequestScopedError struct{ holdRateLimitError }
++
++func (holdRequestScopedError) IsRequestScoped() bool { return true }
++
++// holdScriptExecutor fails the first failFirst calls with err (all calls when
++// failFirst < 0) and succeeds afterwards. bootstrap delivers stream failures
++// in the first chunk instead of as a synchronous error.
++type holdScriptExecutor struct {
++	identifier string
++	failFirst  int
++	err        error
++	bootstrap  bool
++
++	mu    sync.Mutex
++	calls []time.Time
++}
++
++func (e *holdScriptExecutor) Identifier() string { return e.identifier }
++
++func (e *holdScriptExecutor) next() error {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	e.calls = append(e.calls, time.Now())
++	if e.failFirst < 0 || len(e.calls) <= e.failFirst {
++		return e.err
++	}
++	return nil
++}
++
++func (e *holdScriptExecutor) callCount() int {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	return len(e.calls)
++}
++
++func (e *holdScriptExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	if err := e.next(); err != nil {
++		return cliproxyexecutor.Response{}, err
++	}
++	return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
++}
++
++func (e *holdScriptExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	err := e.next()
++	if err != nil && !e.bootstrap {
++		return nil, err
++	}
++	ch := make(chan cliproxyexecutor.StreamChunk, 1)
++	if err != nil {
++		ch <- cliproxyexecutor.StreamChunk{Err: err}
++	} else {
++		ch <- cliproxyexecutor.StreamChunk{Payload: []byte("data: ok\n\n")}
++	}
++	close(ch)
++	return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
++}
++
++func (*holdScriptExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) { return auth, nil }
++
++func (e *holdScriptExecutor) CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	return e.Execute(ctx, auth, req, opts)
++}
++
++func (*holdScriptExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
++	return nil, nil
++}
++
++func fastRateLimitHoldSchedule(t *testing.T) {
++	t.Helper()
++	base, maxWait, minCooldown := rateLimitHoldBackoffBase, rateLimitHoldBackoffMax, rateLimitHoldMinCooldown
++	rateLimitHoldBackoffBase = 20 * time.Millisecond
++	rateLimitHoldBackoffMax = 100 * time.Millisecond
++	rateLimitHoldMinCooldown = 10 * time.Millisecond
++	t.Cleanup(func() {
++		rateLimitHoldBackoffBase, rateLimitHoldBackoffMax, rateLimitHoldMinCooldown = base, maxWait, minCooldown
++	})
++}
++
++// newHoldManager mirrors the live CPA settings for the oc route: one
++// credential, request-retry 1, no max-retry-interval.
++func newHoldManager(t *testing.T, executor *holdScriptExecutor, holdSeconds int) *Manager {
++	t.Helper()
++	manager := NewManager(nil, nil, nil)
++	manager.SetRetryConfig(1, 0, 8)
++	manager.RegisterExecutor(executor)
++	authID := executor.identifier + "-auth"
++	reg := registry.GetGlobalRegistry()
++	reg.RegisterClient(authID, executor.identifier, []*registry.ModelInfo{{ID: "hold-model"}})
++	t.Cleanup(func() { reg.UnregisterClient(authID) })
++	metadata := map[string]any{}
++	if holdSeconds > 0 {
++		metadata["rate_limit_hold_seconds"] = holdSeconds
++	}
++	if _, errRegister := manager.Register(context.Background(), &Auth{ID: authID, Provider: executor.identifier, Metadata: metadata}); errRegister != nil {
++		t.Fatalf("register: %v", errRegister)
++	}
++	return manager
++}
++
++type holdInvoke struct {
++	name string
++	run  func(context.Context, *Manager, string) error
++}
++
++func holdInvocations() []holdInvoke {
++	req := cliproxyexecutor.Request{Model: "hold-model"}
++	return []holdInvoke{
++		{"execute", func(ctx context.Context, m *Manager, provider string) error {
++			_, err := m.Execute(ctx, []string{provider}, req, cliproxyexecutor.Options{})
++			return err
++		}},
++		{"count", func(ctx context.Context, m *Manager, provider string) error {
++			_, err := m.ExecuteCount(ctx, []string{provider}, req, cliproxyexecutor.Options{})
++			return err
++		}},
++		{"stream", func(ctx context.Context, m *Manager, provider string) error {
++			result, err := m.ExecuteStream(ctx, []string{provider}, req, cliproxyexecutor.Options{Stream: true})
++			if err != nil {
++				return err
++			}
++			for chunk := range result.Chunks {
++				if chunk.Err != nil {
++					return chunk.Err
++				}
++			}
++			return nil
++		}},
++	}
++}
++
++func TestRateLimitHoldBackoffSchedule(t *testing.T) {
++	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 15 * time.Second}
++	for level, expected := range want {
++		if got := rateLimitHoldBackoff(level); got != expected {
++			t.Fatalf("level %d: got %s, want %s", level, got, expected)
++		}
++	}
++	if got := rateLimitHoldBackoff(1 << 20); got != 15*time.Second {
++		t.Fatalf("huge level must stay capped, got %s", got)
++	}
++}
++
++func TestRateLimitHoldRecoversWithinWindow(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	for _, invoke := range holdInvocations() {
++		for _, bootstrap := range []bool{false, true} {
++			if bootstrap && invoke.name != "stream" {
++				continue
++			}
++			t.Run(invoke.name, func(t *testing.T) {
++				executor := &holdScriptExecutor{identifier: "hold-recover-" + invoke.name, failFirst: 4, err: holdRateLimitError{retryAfter: zenDailyRetryAfter}, bootstrap: bootstrap}
++				manager := newHoldManager(t, executor, 5)
++				start := time.Now()
++				if err := invoke.run(context.Background(), manager, executor.identifier); err != nil {
++					t.Fatalf("held request must recover, got %v", err)
++				}
++				if calls := executor.callCount(); calls != 5 {
++					t.Fatalf("upstream calls = %d, want 4 rate-limited probes + 1 success", calls)
++				}
++				if elapsed := time.Since(start); elapsed > 3*time.Second {
++					t.Fatalf("recovery took %s; the 22h Retry-After must not be waited out", elapsed)
++				}
++				// The success cleared the cooldown: the next request goes straight through.
++				before := executor.callCount()
++				start = time.Now()
++				if err := invoke.run(context.Background(), manager, executor.identifier); err != nil {
++					t.Fatalf("request after recovery failed: %v", err)
++				}
++				if executor.callCount() != before+1 || time.Since(start) > 500*time.Millisecond {
++					t.Fatal("request after recovery was delayed or retried")
++				}
++			})
++		}
++	}
++}
++
++func TestRateLimitHoldExhaustsAfterWindow(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	for _, invoke := range holdInvocations() {
++		t.Run(invoke.name, func(t *testing.T) {
++			executor := &holdScriptExecutor{identifier: "hold-exhaust-" + invoke.name, failFirst: -1, err: holdRateLimitError{retryAfter: zenDailyRetryAfter}, bootstrap: invoke.name == "stream"}
++			manager := newHoldManager(t, executor, 1)
++			start := time.Now()
++			err := invoke.run(context.Background(), manager, executor.identifier)
++			elapsed := time.Since(start)
++			if statusCodeFromError(err) != http.StatusTooManyRequests {
++				t.Fatalf("want 429 after the hold, got %v", err)
++			}
++			if elapsed < 950*time.Millisecond || elapsed > 2500*time.Millisecond {
++				t.Fatalf("hold lasted %s, want about the 1s window", elapsed)
++			}
++			// Exponential probes (20ms .. 100ms) across the window, not one call
++			// and not a hot loop.
++			if calls := executor.callCount(); calls < 6 || calls > 30 {
++				t.Fatalf("upstream calls = %d during a 1s hold", calls)
++			}
++		})
++	}
++}
++
++func TestRateLimitHoldNotAppliedToStockCredential(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	executor := &holdScriptExecutor{identifier: "hold-stock", failFirst: -1, err: holdRateLimitError{retryAfter: zenDailyRetryAfter}}
++	manager := newHoldManager(t, executor, 0)
++	start := time.Now()
++	_, err := manager.Execute(context.Background(), []string{executor.identifier}, cliproxyexecutor.Request{Model: "hold-model"}, cliproxyexecutor.Options{})
++	if statusCodeFromError(err) != http.StatusTooManyRequests || time.Since(start) > 500*time.Millisecond || executor.callCount() != 1 {
++		t.Fatalf("stock credential must fail fast with one call: err=%v calls=%d", err, executor.callCount())
++	}
++	auth, _ := manager.GetByID(executor.identifier + "-auth")
++	state := auth.ModelStates["hold-model"]
++	if state == nil || state.NextRetryAfter.Before(time.Now().Add(zenDailyRetryAfter-time.Minute)) {
++		t.Fatalf("stock credential must keep the upstream cooldown, got %+v", state)
++	}
++}
++
++func TestRateLimitHoldSkipsRequestScoped429(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	executor := &holdScriptExecutor{identifier: "hold-scoped", failFirst: -1, err: holdRequestScopedError{holdRateLimitError{retryAfter: time.Minute}}}
++	manager := newHoldManager(t, executor, 5)
++	start := time.Now()
++	_, err := manager.Execute(context.Background(), []string{executor.identifier}, cliproxyexecutor.Request{Model: "hold-model"}, cliproxyexecutor.Options{})
++	if err == nil || time.Since(start) > 500*time.Millisecond || executor.callCount() != 1 {
++		t.Fatalf("request-scoped 429 must not be held: err=%v calls=%d", err, executor.callCount())
++	}
++}
++
++func TestRateLimitHoldStopsOnClientCancel(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	executor := &holdScriptExecutor{identifier: "hold-cancel", failFirst: -1, err: holdRateLimitError{retryAfter: zenDailyRetryAfter}}
++	manager := newHoldManager(t, executor, 60)
++	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
++	defer cancel()
++	start := time.Now()
++	_, err := manager.Execute(ctx, []string{executor.identifier}, cliproxyexecutor.Request{Model: "hold-model"}, cliproxyexecutor.Options{})
++	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
++		t.Fatalf("client cancellation must end the hold: err=%v elapsed=%s", err, time.Since(start))
++	}
++}
++
++func TestRateLimitHoldCooldownIgnoresLongUpstreamHint(t *testing.T) {
++	manager := NewManager(nil, nil, nil)
++	auth := &Auth{ID: "hold-mark", Provider: "claude", Metadata: map[string]any{"rate_limit_hold_seconds": 180}}
++	if _, err := manager.Register(context.Background(), auth); err != nil {
++		t.Fatalf("register: %v", err)
++	}
++	// A deadline left by an older policy must not survive the next 429.
++	manager.mu.Lock()
++	stale := ensureModelState(manager.auths[auth.ID], "deepseek-v4.1-flash-oc")
++	stale.NextRetryAfter = time.Now().Add(22 * time.Hour)
++	manager.mu.Unlock()
++
++	retryAfter := zenDailyRetryAfter
++	fail := func() *ModelState {
++		manager.MarkResult(context.Background(), Result{
++			AuthID: auth.ID, Provider: "claude", Model: "deepseek-v4.1-flash-oc", Success: false,
++			RetryAfter: &retryAfter, Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "rate limit"},
++		})
++		current, _ := manager.GetByID(auth.ID)
++		return current.ModelStates["deepseek-v4.1-flash-oc"]
++	}
++	state := fail()
++	if until := time.Until(state.NextRetryAfter); until <= 0 || until > 2*time.Second || time.Until(state.Quota.NextRecoverAt) > 2*time.Second {
++		t.Fatalf("first 429 must cool for the 2s step, got retry=%s recover=%s", until, time.Until(state.Quota.NextRecoverAt))
++	}
++	if state.Quota.BackoffLevel != 1 {
++		t.Fatalf("backoff level = %d, want 1", state.Quota.BackoffLevel)
++	}
++	first := state.NextRetryAfter
++	if concurrent := fail(); !concurrent.NextRetryAfter.Equal(first) || concurrent.Quota.BackoffLevel != 1 {
++		t.Fatal("a concurrent failure inside the window must not extend or escalate it")
++	}
++
++	// After the window passes the next failure escalates to the 4s step.
++	manager.mu.Lock()
++	expired := manager.auths[auth.ID].ModelStates["deepseek-v4.1-flash-oc"]
++	expired.NextRetryAfter = time.Now().Add(-time.Second)
++	expired.Quota.NextRecoverAt = expired.NextRetryAfter
++	manager.mu.Unlock()
++	state = fail()
++	if until := time.Until(state.NextRetryAfter); until <= 2*time.Second || until > 4*time.Second || state.Quota.BackoffLevel != 2 {
++		t.Fatalf("second window = %s level %d, want the 4s step", until, state.Quota.BackoffLevel)
++	}
++
++	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "claude", Model: "deepseek-v4.1-flash-oc", Success: true})
++	current, _ := manager.GetByID(auth.ID)
++	if recovered := current.ModelStates["deepseek-v4.1-flash-oc"]; recovered.Unavailable || recovered.Quota.Exceeded || recovered.Quota.BackoffLevel != 0 {
++		t.Fatalf("success must clear the hold cooldown, got %+v", recovered)
++	}
++}
++
++func TestRateLimitHoldCapsPersistedCooldownOnRestore(t *testing.T) {
++	now := time.Now()
++	record := func(model string, updatedAt time.Time) CooldownStateRecord {
++		next := now.Add(22*time.Hour + 45*time.Minute)
++		return CooldownStateRecord{
++			Provider: "claude", AuthID: "hold-restore", Model: model, Status: "cooling",
++			NextRetryAfter: next, Reason: "quota",
++			Quota:     QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
++			LastError: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "rate limit"},
++			UpdatedAt: updatedAt,
++		}
++	}
++	for _, hold := range []int{180, 0} {
++		manager := NewManager(nil, nil, nil)
++		metadata := map[string]any{}
++		if hold > 0 {
++			metadata["rate_limit_hold_seconds"] = hold
++		}
++		if _, err := manager.Register(context.Background(), &Auth{ID: "hold-restore", Provider: "claude", Metadata: metadata}); err != nil {
++			t.Fatalf("register: %v", err)
++		}
++		manager.SetCooldownStateStore(&mockCooldownStateStore{records: []CooldownStateRecord{
++			record("old-model", now.Add(-10*time.Minute)),
++			record("recent-model", now.Add(-5*time.Second)),
++		}})
++		if err := manager.RestoreCooldownStates(context.Background()); err != nil {
++			t.Fatalf("restore: %v", err)
++		}
++		auth, _ := manager.GetByID("hold-restore")
++		oldBlocked, _, _ := isAuthBlockedForModel(auth, "old-model", time.Now())
++		recentBlocked, _, recentNext := isAuthBlockedForModel(auth, "recent-model", time.Now())
++		if hold == 0 {
++			if !oldBlocked || !recentBlocked || time.Until(recentNext) < 22*time.Hour {
++				t.Fatal("stock credentials must restore persisted cooldowns unchanged")
++			}
++			continue
++		}
++		if oldBlocked {
++			t.Fatal("a persisted 22h 429 cooldown from 10 minutes ago must not block a hold credential")
++		}
++		if !recentBlocked || time.Until(recentNext) > rateLimitHoldBackoffMax {
++			t.Fatalf("a recent 429 must be restored capped to its hold window, got blocked=%t next=%s", recentBlocked, time.Until(recentNext))
++		}
++	}
++}
++
++func TestRateLimitHoldPlanTrimsStaleCooldown(t *testing.T) {
++	fastRateLimitHoldSchedule(t)
++	executor := &holdScriptExecutor{identifier: "hold-stale", failFirst: 0}
++	manager := newHoldManager(t, executor, 2)
++	authID := executor.identifier + "-auth"
++	// Simulates a 22h deadline loaded before this credential opted in (hot
++	// reload): the first request must probe instead of failing locally.
++	manager.mu.Lock()
++	state := ensureModelState(manager.auths[authID], "hold-model")
++	state.Unavailable = true
++	state.Status = StatusError
++	state.NextRetryAfter = time.Now().Add(22 * time.Hour)
++	state.UpdatedAt = time.Now().Add(-time.Hour)
++	applyCooldownFields(&state.Quota, QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: state.NextRetryAfter})
++	updateAggregatedAvailability(manager.auths[authID], time.Now())
++	snapshot := manager.auths[authID].Clone()
++	manager.mu.Unlock()
++	manager.scheduler.upsertAuth(snapshot)
++
++	if _, err := manager.Execute(context.Background(), []string{executor.identifier}, cliproxyexecutor.Request{Model: "hold-model"}, cliproxyexecutor.Options{}); err != nil {
++		t.Fatalf("stale cooldown must be trimmed and the upstream probed, got %v", err)
++	}
++	if executor.callCount() != 1 {
++		t.Fatalf("upstream calls = %d, want 1", executor.callCount())
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
+index 4bf7fd1..b370053 100644
+--- a/sdk/cliproxy/auth/conductor_refresh.go
++++ b/sdk/cliproxy/auth/conductor_refresh.go
+@@ -164,7 +164,12 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
+ 		return false
+ 	}
+ 	if hasExpiry && !expiry.IsZero() {
+-		return time.Until(expiry) <= *lead
++		// Stagger due time across the lead window so large pools don't stampede.
++		effectiveLead := *lead - refreshStaggerOffset(a, *lead)
++		if effectiveLead < 0 {
++			effectiveLead = 0
++		}
++		return time.Until(expiry) <= effectiveLead
+ 	}
+ 	if !lastRefresh.IsZero() {
+ 		return now.Sub(lastRefresh) >= *lead
+@@ -172,6 +177,34 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
+ 	return true
+ }
+ 
++// refreshStaggerOffset returns a deterministic offset in [0, lead) derived from
++// the auth identity so refresh work for large pools is spread across the lead window.
++func refreshStaggerOffset(auth *Auth, lead time.Duration) time.Duration {
++	if auth == nil || lead <= 0 {
++		return 0
++	}
++	id := strings.TrimSpace(auth.ID)
++	if id == "" {
++		id = strings.TrimSpace(auth.FileName)
++	}
++	if id == "" {
++		id = strings.TrimSpace(auth.Label)
++	}
++	if id == "" {
++		return 0
++	}
++	var h uint64 = 14695981039346656037 // FNV-1a offset basis
++	for i := 0; i < len(id); i++ {
++		h ^= uint64(id[i])
++		h *= 1099511628211
++	}
++	nanos := lead.Nanoseconds()
++	if nanos <= 0 {
++		return 0
++	}
++	return time.Duration(h % uint64(nanos))
++}
++
+ func authPreferredInterval(a *Auth) time.Duration {
+ 	if a == nil {
+ 		return 0
+diff --git a/sdk/cliproxy/auth/disable_cooling_retryafter_test.go b/sdk/cliproxy/auth/disable_cooling_retryafter_test.go
+new file mode 100644
+index 0000000..e2a021d
+--- /dev/null
++++ b/sdk/cliproxy/auth/disable_cooling_retryafter_test.go
+@@ -0,0 +1,72 @@
++package auth
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++// With disable-cooling=true, stock CLIProxyAPI ignores 429 cooldowns. Free-usage
++// exhaustion still must park the auth for the explicit RetryAfter (24h).
++func TestMarkResult_HonorsRetryAfterWithDisableCooling(t *testing.T) {
++	manager := NewManager(nil, nil, nil)
++	manager.SetConfigSnapshot(&internalconfig.Config{DisableCooling: true})
++
++	auth := &Auth{ID: "xai-free-exhausted", Provider: "xai", Status: StatusActive}
++	if _, err := manager.Register(WithSkipPersist(context.Background()), auth); err != nil {
++		t.Fatalf("Register: %v", err)
++	}
++
++	retryAfter := 24 * time.Hour
++	manager.MarkResult(context.Background(), Result{
++		AuthID:     auth.ID,
++		Provider:   auth.Provider,
++		Model:      "grok-4.5",
++		Success:    false,
++		RetryAfter: &retryAfter,
++		Error:      &Error{Message: "free-usage-exhausted", HTTPStatus: 429},
++	})
++
++	updated, ok := manager.GetByID(auth.ID)
++	if !ok || updated == nil {
++		t.Fatal("auth missing after MarkResult")
++	}
++	state := updated.ModelStates["grok-4.5"]
++	if state == nil {
++		t.Fatal("expected model state for grok-4.5")
++	}
++	if state.NextRetryAfter.IsZero() {
++		t.Fatal("NextRetryAfter is zero; free-usage auth would be retried immediately")
++	}
++	remaining := time.Until(state.NextRetryAfter)
++	if remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
++		t.Fatalf("NextRetryAfter remaining = %v, want ~24h", remaining)
++	}
++	if !state.Unavailable {
++		t.Fatal("model state should be Unavailable during free-usage cooldown")
++	}
++	if blocked, _, _ := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); !blocked {
++		t.Fatal("auth must be blocked for model while free-usage cooldown is active")
++	}
++	if blocked, _, _ := isAuthBlockedForModel(updated, "grok-4.5", state.NextRetryAfter.Add(time.Second)); blocked {
++		t.Fatal("auth should unblock after free-usage RetryAfter elapses")
++	}
++}
++
++func TestApplyAuthFailureState_HonorsRetryAfterWithDisableCooling(t *testing.T) {
++	auth := &Auth{ID: "xai-no-model", Provider: "xai", Status: StatusActive}
++	retryAfter := 24 * time.Hour
++	now := time.Now()
++	applyAuthFailureState(auth, &Error{Message: "free-usage-exhausted", HTTPStatus: 429}, &retryAfter, now, true)
++	if auth.NextRetryAfter.IsZero() {
++		t.Fatal("NextRetryAfter is zero under disable-cooling")
++	}
++	if !auth.NextRetryAfter.Equal(now.Add(retryAfter)) {
++		t.Fatalf("NextRetryAfter = %v, want %v", auth.NextRetryAfter, now.Add(retryAfter))
++	}
++	if !auth.Unavailable {
++		t.Fatal("auth should remain Unavailable when explicit RetryAfter is set")
++	}
++}
+diff --git a/sdk/cliproxy/auth/metadata_keys.go b/sdk/cliproxy/auth/metadata_keys.go
+index e861cfe..83f08ed 100644
+--- a/sdk/cliproxy/auth/metadata_keys.go
++++ b/sdk/cliproxy/auth/metadata_keys.go
+@@ -18,6 +18,8 @@ func CanonicalCredentialMetadataKey(key string) string {
+ 		return "model_aliases"
+ 	case "proxy-url":
+ 		return "proxy_url"
++	case "rate-limit-hold-seconds":
++		return "rate_limit_hold_seconds"
+ 	case "request-retry":
+ 		return "request_retry"
+ 	case "request-scoped-errors":
+diff --git a/sdk/cliproxy/auth/types.go b/sdk/cliproxy/auth/types.go
+index 0aeb7b2..3b9100a 100644
+--- a/sdk/cliproxy/auth/types.go
++++ b/sdk/cliproxy/auth/types.go
+@@ -526,6 +526,24 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
+ 	return 0, false
+ }
+ 
++// RateLimitHoldOverride returns the per-credential rate-limit hold window.
++// The value is read from metadata key "rate_limit_hold_seconds" (or legacy
++// "rate-limit-hold-seconds"); unset or non-positive values disable the hold.
++func (a *Auth) RateLimitHoldOverride() (time.Duration, bool) {
++	if a == nil || a.Metadata == nil {
++		return 0, false
++	}
++	for _, key := range []string{"rate_limit_hold_seconds", "rate-limit-hold-seconds"} {
++		if val, ok := a.Metadata[key]; ok {
++			if parsed, okParse := parseIntAny(val); okParse && parsed > 0 {
++				return time.Duration(parsed) * time.Second, true
++			}
++			return 0, false
++		}
++	}
++	return 0, false
++}
++
+ func parseBoolAny(val any) (bool, bool) {
+ 	switch typed := val.(type) {
+ 	case bool:

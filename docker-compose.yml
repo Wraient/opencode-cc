@@ -2,11 +2,14 @@ name: opencode-cc
 
 services:
   opencode-cc:
-    image: ghcr.io/kiowx/opencode-cc:latest
+    build: .
+    image: opencode-cc:local
     container_name: opencode-cc
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
+    environment:
+      OPENCODE_CC_PANEL_TOKEN: ${OPENCODE_CC_PANEL_TOKEN:?Set a private panel password before starting}
     volumes:
       - opencode-cc-data:/data
 

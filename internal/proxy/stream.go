@@ -676,6 +676,12 @@ func ScanOpenAIStreamWithStatus(r io.Reader, onChunk func(*OpenAIStreamChunk) er
 			result.SawDone = true
 			break
 		}
+		var envelope struct {
+			Error json.RawMessage `json:"error"`
+		}
+		if json.Unmarshal([]byte(data), &envelope) == nil && len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+			return result, errors.New("upstream stream reported an API error")
+		}
 		var chunk OpenAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			// Skip malformed line rather than killing the whole stream.

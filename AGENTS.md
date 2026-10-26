@@ -1,5 +1,11 @@
 # AGENTS.md — opencode-cc
 
+## New laptop / friend installation
+
+- Read `docs/setup/FRIENDS.md` before setup. It is the portable agent handoff; the production paths, Morph dependencies, ports and policies below describe Wraient's reference machine, not resources to copy or assume on another laptop.
+- Never copy private accounts, bot/chat credentials, OAuth refresh tokens, WARP registration or Tailscale node state. Start new installs with loopback binding, panel/client authentication and phone auto-reset disabled until their owner configures and authorizes it.
+- CPA recovery depends on the pinned local patches in `contrib/cliproxyapi/`; stock CPA is not equivalent. Follow the exact-model acceptance procedure before claiming the new machine works.
+
 ## Live proxy: DO NOT touch directly
 
 - The production proxy is `opencode-cc.service` (systemd user unit).
@@ -119,3 +125,15 @@
   launch wrapper applies context limits dynamically to live model switches.
 - These client settings do not increase upstream model capacity. DeepSeek's
   measured free-route input ceiling is about 261K.
+
+
+## DS V4.1 Flash Free deployed repair (2026-10-24)
+
+- DS Flash monitoring cadence: the user requested a fixed 60-minute interval to conserve usage (2026-10-25). Keep the existing watcher hourly, including after failures; this supersedes its former adaptive cadence. Preserve the authorized deadline and repair scope.
+
+- Production `opencode-cc.service` enables `OPENCODE_CC_DS_FLASH_FETCH_URL` via its `ds-flash.conf` drop-in. Only the exact Zen `deepseek-v4.1-flash-free` Chat request uses the dedicated Bun compatibility transport; other models/origins keep their existing path.
+- `opencode-cc-ds-flash.service` is enabled on **18790**. This is now a production helper: never reuse that port for staging. Source, audited prelude, license, runtime recipe and rollback instructions: `scripts/ds-flash-gateway/`. Runtime selection: `~/.local/lib/opencode-cc-ds-flash/current`.
+- The helper retains client instructions, tools and history after the pinned OpenCode prelude, normalizes project/session metadata, and automatically selects phone/direct egress. All-route failure may trigger one authorized Telegram phone reset per 30 minutes. It stores no provider credentials and never switches model/account or clears genuine quota/cooldown state.
+- The exact Claude → CPA `deepseek-v4.1-flash-oc` → relay → Zen chain passed real Write/Read tasks for the supplied key and active OAuth account, brief and 195-second outages, and same-CPA-process recovery. Production file-tool proof: relay request IDs 32178–32180, all 200 on the free model.
+- Updating the prelude/transport requires the real harness tests again. Use `scripts/test_ds_flash_chain.py` with isolated 18789/18319/18794; preserve the same CPA process for outage/recovery. Keep the normal staged/atomic deployment procedure and do not stop Morph.
+- A 429 alone is not proof a key is exhausted. Distinguish service-account keys, active OAuth and expired legacy credentials. Full evidence and interpretation limits: `docs/diagnostics/2026-10-24-warp-api-check.md`.

@@ -1,0 +1,19 @@
+[Unit]
+Description=DS V4.1 Flash Free compatibility and egress recovery
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/opencode-cc-ds-flash/current/bun %h/.local/lib/opencode-cc-ds-flash/current/gateway.mjs
+Environment=DS_FLASH_ROUTES=phone,direct
+Environment=DS_FLASH_AUTO_RESET=1
+StateDirectory=opencode-cc-ds-flash
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=256M
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

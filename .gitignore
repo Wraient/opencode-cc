@@ -5,6 +5,8 @@
 *.exe~
 
 # Local runtime data (config + SQLite db)
+/.env
+/.env.local
 /data/
 /_smoke*/
 

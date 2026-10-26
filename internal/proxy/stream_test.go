@@ -9,6 +9,19 @@ import (
 	"testing"
 )
 
+func TestStreamErrorEnvelopeIsFailure(t *testing.T) {
+	for _, prefix := range []string{"", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"} {
+		count := 0
+		result, err := ScanOpenAIStreamWithStatus(strings.NewReader(prefix+"data: {\"error\":{\"type\":\"api_error\",\"message\":\"fixture\"}}\n\n"), func(*OpenAIStreamChunk) error { count++; return nil })
+		if err == nil || err == io.EOF || result.SawDone {
+			t.Fatalf("error envelope treated as success: %+v %v", result, err)
+		}
+		if (prefix == "" && count != 0) || (prefix != "" && count != 1) {
+			t.Fatalf("unexpected output count %d", count)
+		}
+	}
+}
+
 // TestStreamConversion feeds a synthetic OpenAI SSE stream (text + tool call)
 // through the converter and checks the emitted Anthropic events are well-formed
 // and in the right order.

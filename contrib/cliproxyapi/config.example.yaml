@@ -1,0 +1,25 @@
+# Private copy: ~/.cli-proxy-api/config.yaml, chmod 600.
+config-version: 8
+server:
+  host: 127.0.0.1
+  port: 8317
+access:
+  api-keys:
+    - REPLACE_WITH_CLIENT_TO_CPA_KEY
+api-keys:
+  claude:
+    - name: claude-2
+      prefix: oc
+      base-url: http://127.0.0.1:8787
+      proxy-url: ""
+      rate-limit-hold-seconds: 180
+      models: []
+      keys:
+        - api-key: REPLACE_WITH_CPA_TO_RELAY_CLIENT_KEY
+          cloak:
+            strict-mode: false
+          models:
+            - name: deepseek-v4.1-flash-free
+              alias: deepseek-v4.1-flash-oc
+              thinking:
+                levels: [low, high, max]

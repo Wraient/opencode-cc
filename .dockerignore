@@ -4,6 +4,8 @@
 .vscode
 
 data
+.env
+.env.local
 dist
 _smoke*
 

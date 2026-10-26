@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +39,7 @@ func New(cfg *config.Config, st *store.Store) *Server {
 	if cfg != nil {
 		dataDir = cfg.DataDir()
 	}
-	return &Server{
+	s := &Server{
 		cfg:          cfg,
 		store:        st,
 		effortLevels: LoadEffortLevelsCache(dataDir),
@@ -92,6 +93,8 @@ func New(cfg *config.Config, st *store.Store) *Server {
 			},
 		},
 	}
+	s.httpClient.Transport = newDSFlashTransport(s.httpClient.Transport, os.Getenv("OPENCODE_CC_DS_FLASH_FETCH_URL"))
+	return s
 }
 
 // Handler returns the root http.Handler wiring all routes. panelAssets serves

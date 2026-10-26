@@ -1,5 +1,7 @@
 # opencode-cc
 
+**Installing this fork on another laptop? Start with [the complete setup and agent handoff](docs/setup/FRIENDS.md).** It covers the exact Claude → patched CPA → relay → Bun helper chain, optional WARP/phone egress, Telegram recovery, credentials, tests and rollback.
+
 > An Anthropic/OpenAI-to-OpenCode Zen multi-protocol bridge proxy with an embedded web dashboard.
 
 `opencode-cc` is a high-performance Go proxy that exposes both the **Anthropic Messages API** and the
@@ -77,7 +79,7 @@ Each protocol implements the `TranslateRequest`, `TranslateResponse`, and `Trans
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.24+
 - Node.js 20+ (only required when building the UI)
 - An OpenCode Zen API key. Sign in at [opencode.ai/auth](https://opencode.ai/auth), add billing information, and copy
   your API key.
@@ -85,8 +87,12 @@ Each protocol implements the `TranslateRequest`, `TranslateResponse`, and `Trans
 ### Build and Run
 
 ```bash
-make            # Build the frontend and Go binary as ./opencode-cc
-./opencode-cc   # Start on :8787 and create config.json and data/opencode-cc.db
+(cd web && npm ci --no-audit --no-fund && npm run build)
+mkdir -p internal/assets/dist
+cp -a web/dist/. internal/assets/dist/
+go build -o opencode-cc .
+# First installation only; never start over an existing service on this port.
+OPENCODE_CC_LISTEN=127.0.0.1:8787 ./opencode-cc -data ./data
 ```
 
 Open `http://localhost:8787/` and go to the **Config** tab:
@@ -176,60 +182,37 @@ translation.
 ### Development Mode with HMR
 
 ```bash
-make dev   # Vite on :5174 and Go on :8787, with API requests proxied by Vite
+# Terminal 1, only if no relay already owns :8787:
+OPENCODE_CC_LISTEN=127.0.0.1:8787 go run . -data /tmp/opencode-cc-dev
+# Terminal 2:
+cd web && npm run dev
 ```
 
 ### Docker
 
-Images are published to GitHub Container Registry as `ghcr.io/kiowx/opencode-cc`.
-
-**One-command deployment** (no clone required; replace the API key and panel password):
+Build **this checkout** for the Wraient fork. `ghcr.io/kiowx/opencode-cc`
+is the upstream project's image; it is not a release of these patches.
 
 ```bash
+docker build -t opencode-cc:local .
 docker run -d --name opencode-cc --restart unless-stopped \
-  -p 8787:8787 \
-  -v opencode-cc-data:/data \
-  -e ZEN_API_KEY=sk-your-key \
-  -e OPENCODE_CC_PANEL_TOKEN=your-panel-password \
-  ghcr.io/kiowx/opencode-cc:latest
+  -p 127.0.0.1:8787:8787 -v opencode-cc-data:/data \
+  -e OPENCODE_CC_PANEL_TOKEN=replace-with-your-private-password \
+  opencode-cc:local
+# Or build the included local-image compose configuration:
+# Set OPENCODE_CC_PANEL_TOKEN in a private, untracked .env first.
+docker compose up -d --build
 ```
 
-Open `http://your-server-ip:8787` and sign in with `OPENCODE_CC_PANEL_TOKEN`. The
-`opencode-cc-data` named volume persists configuration and SQLite data. Setting a panel password
-is strongly recommended whenever the port is exposed beyond localhost.
-
-The included `docker-compose.yml` provides the same persistent setup:
-
-```bash
-docker compose up -d
-```
-
-To update to the latest image:
-
-```bash
-docker compose pull
-docker compose up -d
-docker image prune -f
-```
-
-For a deployment created with `docker run`, update it with:
-
-```bash
-docker pull ghcr.io/kiowx/opencode-cc:latest
-docker rm -f opencode-cc
-# Re-run the one-command deployment above
-```
-
-Replace `latest` with a version such as `1.3.2` to pin a release. To build locally instead:
-
-```bash
-docker build -t opencode-cc .
-docker run -d --name opencode-cc -p 8787:8787 -v opencode-cc-data:/data opencode-cc
-```
-
-Every pushed `v*` tag publishes Linux amd64/arm64 images and refreshes the exact version,
-major/minor, major, and `latest` tags. After the first publish, set the GHCR package visibility
-to Public in GitHub Packages to allow anonymous pulls.
+These commands provide the Go relay/dashboard only. Configure your own Zen key
+in the protected panel. For the exact DS Flash Free compatibility and recovery
+chain, use the [native Linux setup](docs/setup/FRIENDS.md): the Dockerfile does
+not include Bun, CPA, phone egress or Telegram automation. Container loopback
+is not the host's loopback; `127.0.0.1:18790` / `:18889` / `:40000` in a container
+will not reach host services without deliberate network configuration. Active
+OpenCode OAuth also requires its private database to be available read-only
+inside the container. This combined container setup has not been accepted here.
+Do not expose the panel publicly or paste real credentials into shell history.
 
 ## How Translation Works
 
