@@ -5,6 +5,10 @@ branch `patch/opencode-user-agent`. Read this before executing setup commands.
 The target is Linux with systemd user services. Other operating systems need
 adapted service/network instructions; they have not been accepted here.
 
+**Optional clients:** see [Claude Code terminal and T3 Code setup](OPTIONAL_CLIENTS.md).
+Neither is required for other relay clients. Claude is required only when you
+choose the Claude route or run its acceptance tests; T3 is an optional UI.
+
 The exact tested chain is:
 
 ```text
@@ -38,7 +42,7 @@ container chain or second physical laptop installation was tested.
 | Go relay, web dashboard, translations, auth | Source and tests | Go 1.24+, Node 20+/npm to build UI |
 | Exact DS Flash compatibility helper | `scripts/ds-flash-gateway/`, pinned prelude + MIT notice | Bun; validated production version 1.4.2 |
 | CPA retry behavior | `contrib/cliproxyapi/` patch bundle + example config | Upstream v8.0.4 source, Go toolchain requested by its go.mod |
-| Claude Code | Acceptance runner and wrappers | Installed official CLI; tested here with 2.1.310 |
+| Claude Code (optional client) | Acceptance runner and wrappers | Official CLI 2.1.310 for recorded Claude tests; not required for other clients |
 | OpenCode account | Read-only active credential resolver | Own Zen key or logged-in OpenCode v2; native fixture was 2.1.2 |
 | WARP | Instructions below | Own installed/registered WARP; optional |
 | Phone HTTP proxy | Userspace Tailscale recipe below | Own tailnet and approved Android exit node |
@@ -276,6 +280,10 @@ edit a personal installed copy for your machine. Do not point it at itself.
 `scripts/claude-cpa` assumes `~/.cli-proxy-api/api-key.txt` and a models.env slot
 configuration; use its documented env overrides or configure your harness
 directly. Neither wrapper installs CPA or creates credentials.
+
+For step-by-step client installation, terminal launch commands, T3 provider
+fields and the optional mixed-model context launcher, continue with
+[Optional Claude Code and T3 Code](OPTIONAL_CLIENTS.md). You may skip both.
 
 ## 6. WARP: optional application proxy, separate from the phone
 

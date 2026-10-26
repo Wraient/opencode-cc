@@ -1,5 +1,7 @@
 # opencode-cc
 
+**Optional clients:** [Claude Code and T3 Code setup](docs/setup/OPTIONAL_CLIENTS.md).
+
 **Installing this fork on another laptop? Start with [the complete setup and agent handoff](docs/setup/FRIENDS.md).** It covers the exact Claude → patched CPA → relay → Bun helper chain, optional WARP/phone egress, Telegram recovery, credentials, tests and rollback.
 
 > An Anthropic/OpenAI-to-OpenCode Zen multi-protocol bridge proxy with an embedded web dashboard.
