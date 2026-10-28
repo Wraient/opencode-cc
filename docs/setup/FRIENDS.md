@@ -5,6 +5,9 @@ branch `patch/opencode-user-agent`. Read this before executing setup commands.
 The target is Linux with systemd user services. Other operating systems need
 adapted service/network instructions; they have not been accepted here.
 
+For the repair history, current routing snapshot, Telegram control flow and
+the limits of the evidence, read [DeepSeek Flash recovery explained](DS_FLASH_RECOVERY.md).
+
 **Optional clients:** see [Claude Code terminal and T3 Code setup](OPTIONAL_CLIENTS.md).
 Neither is required for other relay clients. Claude is required only when you
 choose the Claude route or run its acceptance tests; T3 is an optional UI.

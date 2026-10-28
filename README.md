@@ -4,6 +4,8 @@
 
 **Installing this fork on another laptop? Start with [the complete setup and agent handoff](docs/setup/FRIENDS.md).** It covers the exact Claude → patched CPA → relay → Bun helper chain, optional WARP/phone egress, Telegram recovery, credentials, tests and rollback.
 
+**How the DeepSeek Free repair works:** [repairs, WARP versus phone/direct routing, Telegram recovery, measured limits and reproducibility](docs/setup/DS_FLASH_RECOVERY.md). Successful recovery does not establish unlimited free allowance.
+
 > An Anthropic/OpenAI-to-OpenCode Zen multi-protocol bridge proxy with an embedded web dashboard.
 
 `opencode-cc` is a high-performance Go proxy that exposes both the **Anthropic Messages API** and the
